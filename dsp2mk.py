@@ -13,6 +13,8 @@ compiler settings and custom build steps. It writes build/build.mk's rules
 for them, through build.mk's `compile` and `tool` macros:
 
   every .c/.cpp   cl (or the compiler in the make variable CL_<project>,
+                  in the environment ENV_<project>; links and libraries
+                  likewise LINK_<project>, LIBEXE_<project>,
                   where build.mk sets one) <the project's ADD CPP, with the file's own ADD CPP
                   and SUBTRACT CPP applied, less /FD> /Fp"<intdir>\\<project>.pch"
                   (unless the file names its own /Fp)
@@ -336,7 +338,7 @@ def main():
                 base = os.path.splitext(ntpath.basename(src))[0]
                 obj = winjoin(wdir, f"{intdir}\\{base}.obj")
                 objs.append(obj)
-                mk.append(f"$(eval $(call compile,{obj},{pdir},{q(src)},$(ENV_GAME),$(or $(CL_{var}),$(CL)),"
+                mk.append(f"$(eval $(call compile,{obj},{pdir},{q(src)},$(or $(ENV_{var}),$(ENV_GAME)),$(or $(CL_{var}),$(CL)),"
                           f"{q(' '.join(cmd))},wine-drives))")
                 if pch:
                     kind = next(f[2] for f in flags if f[:3] in ("/Yc", "/Yu", "/YX")).lower()
@@ -376,7 +378,7 @@ def main():
         if ttype == "Static Library":
             outspec = next((f[5:] for f in cfg.lib if f.lower().startswith("/out:")), f"{outdir}\\{name}.lib")
         else:
-            default = f"{outdir}\\{name}.{'exe' if ttype == 'Application' else 'dll'}"
+            default = f"{outdir}\\{name}.{'exe' if ttype in ('Application', 'Console Application') else 'dll'}"
             outspec = next((f[5:] for f in cfg.link if f.lower().startswith("/out:")), default)
         out = winjoin(wdir, outspec)
         outputs[key] = out
@@ -401,7 +403,8 @@ def main():
         if ttype == "Static Library":
             flags = without(cfg.lib, ["/out:"]) + [f"/out:{outspec}"]
             mk.append(f"$(eval $(call library,{out},{pdir},{q(' '.join(flags))},"
-                      f"{' '.join(objs)},{' '.join(rel(o) for o in objs)}))")
+                      f"{' '.join(objs)},{' '.join(rel(o) for o in objs)},"
+                      f"$(or $(ENV_{var}),$(ENV_GAME)),$(or $(LIBEXE_{var}),$(LIBEXE))))")
         else:
             flags = without(apply_cpp(cfg.link, [], cfg.sub_link), ["/out:", "/pdb", "/debug"])
             flags.append(f"/out:{outspec}")
@@ -414,7 +417,8 @@ def main():
             # the libraries explicitly then.
             pchs = [pch_makers[d.lower()] for d in deps if d.lower() in pch_makers]
             mk.append(f"$(eval $(call binary,{out},{pdir},{q(' '.join(flags))},"
-                      f"{' '.join(prereqs)},{' '.join(rel(o) for o in ins)},{' '.join(rel(o) for o in pchs)}))")
+                      f"{' '.join(prereqs)},{' '.join(rel(o) for o in ins)},{' '.join(rel(o) for o in pchs)},"
+                      f"$(or $(ENV_{var}),$(ENV_GAME)),$(or $(LINK_{var}),$(LINK))))")
         mk.append(f".PHONY: {var}")
         mk.append(f"{var}: {out}")
         mk.append(f"PROJECTS += {var}")
