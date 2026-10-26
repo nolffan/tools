@@ -60,16 +60,31 @@ class Image:
         self.pe = pe
         so = pe + 24 + optsz
         self.secs = []
+        code = set()
         for i in range(self.nsec):
             s = so + i * 40
             name = d[s : s + 8].rstrip(b"\0").decode("latin-1")
             vs, va, rs, rp = struct.unpack_from("<IIII", d, s + 8)
             self.secs.append((name, va, vs, rs, rp))
+            if struct.unpack_from("<I", d, s + 36)[0] & 0x20:   # CNT_CODE
+                code.add(name)
         for name, va, vs, rs, rp in self.secs:
             if name == ".text":
                 self.tlo = self.base + va
                 self.thi = self.tlo + vs
                 self.text = d[rp : rp + min(vs, rs)]
+        # Sections that hold no function pointers, whatever their dwords look
+        # like (rule 2 below): the resource and base-relocation directories
+        # (data directories 2 and 5) hold RVAs, offsets and UTF-16 text, and
+        # a code section other than .text holds instructions, not a table.
+        self.nopointers = {n for n in code if n != ".text"}
+        ndirs = struct.unpack_from("<I", d, pe + 24 + 92)[0]
+        for k in (2, 5):
+            if k < ndirs:
+                rva = struct.unpack_from("<I", d, pe + 24 + 96 + 8 * k)[0]
+                for name, va, vs, rs, rp in self.secs:
+                    if rva and va <= rva < va + max(vs, rs):
+                        self.nopointers.add(name)
 
     def rva2off(self, rva):
         for name, va, vs, rs, rp in self.secs:
@@ -114,9 +129,17 @@ def enumerate_functions(img):
         if text[off] == 0xE8:
             add(tlo + off + 5 + struct.unpack_from("<i", text, off + 1)[0], "call")
 
-    # 2. pointers into .text stored in other sections (vtables, tables)
+    # 2. pointers into .text stored in other sections (vtables, tables) --
+    #    not in the resource or relocation directories, nor in another code
+    #    section (Image.nopointers). A resource's UTF-16 text reads as
+    #    0x00XX00YY, and every one of those in .text's range was a false
+    #    start: 74 in lithtech.exe, cutting real functions in two (its
+    #    sound manager's Update at 0x4b0010 and 0x4b0082, a renderer
+    #    template's tail at 0x4f0004). A second code section (lithtech.exe's
+    #    copy protection, .cms_t) added only unaligned or mid-instruction
+    #    starts.
     for name, va, vs, rs, rp in img.secs:
-        if name == ".text":
+        if name == ".text" or name in getattr(img, "nopointers", ()):
             continue
         blob = img.d[rp : rp + min(vs, rs)]
         for o in range(0, len(blob) - 3, 4):

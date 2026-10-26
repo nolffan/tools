@@ -583,14 +583,13 @@ def _load_objs(objs, icl=False):
             # nor pair
             if "ForceInstantiation" in k:
                 continue
-            # ??_H / ??_I are the vector constructor and destructor
-            # iterators VC6 emits per object as a by-product of `new T[n]`
-            # and `delete [] p`. With exceptions off it expands the loop
-            # inline and never references them, so the linker drops them --
-            # they are the compiler's code either way, not reconstructed
-            # source, and scoring them counts a phantom against us.
-            if k.startswith("??_H") or k.startswith("??_I"):
-                continue
+            # ??_H / ??_I, the vector constructor and destructor iterators
+            # VC6 emits per object for `new T[n]` and `delete [] p`, are
+            # scored like any function. Where the loop is expanded inline
+            # nothing references them and the linker drops them, so they
+            # are `unlinked` and count for nothing; where they are called
+            # (lithtech.exe's 0x401000 and 0x404920, six and two callers)
+            # the shipped image has them and so does our link.
             key = "%s:%s" % (mod, k)
             if key in funcs:
                 print("progress.py: %s is in two of the link's inputs; "
