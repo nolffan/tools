@@ -17,6 +17,9 @@ single one is complete:
      ecx,...; jmp`), a rule-2 start
                                           — destructors reached only when
                                             unwinding
+  4f. a 16-aligned `movl $vtbl,(%ecx); ret` behind padding
+                                          — one-store destructors whose
+                                            callers inlined them
   5. code that follows a `ret` (past padding) with a recognizable prologue
      and that nothing else references
                                           — functions only reached indirectly
@@ -329,6 +332,19 @@ def enumerate_functions(img):
         if n and off + n + 5 <= len(text) and text[off + n] == 0xE9:
             add(tlo + off + n + 5 + struct.unpack_from("<i", text, off + n + 1)[0],
                 "unwind")
+
+    # 4f. a one-store destructor on its own: `movl $vtbl,(%ecx) ; ret`
+    #     (c7 01 imm32 c3, 7 bytes), 16-aligned behind padding. A class's
+    #     destructor that only resets the vtable, unreferenced (its callers
+    #     inlined it) or reached through a funclet; nothing else finds it,
+    #     so it merged into the row in front: lithtech.exe 0x5546c0 behind
+    #     an initializer, 0x560470 behind another, snddrv.dll 0x100081e0
+    #     (ILTSoundSys::~ILTSoundSys, until now an extent split). 20 starts
+    #     in the eight code images.
+    for off in range(16, len(text) - 7, 16):
+        if text[off] == 0xC7 and text[off + 1] == 0x01 \
+                and text[off + 6] == 0xC3 and text[off - 1] in (0x90, 0xCC):
+            add(tlo + off, "stub")
 
     # 5. exports
     for va, nm in img.exports().items():
