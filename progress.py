@@ -24,7 +24,10 @@ the functions (name + byte size) and classifies our build of each as:
   middleware inside a third-party library linked into `app` (D3DX in the
              engine): listed, not counted
   encrypted  in code the retail image keeps encrypted (`encrypted`, the
-             SecuROM pages of Lithtech.exe): listed, not counted
+             SecuROM pages of Lithtech.exe): listed, not counted. Also
+             (ours) a function the target's `unreadable` names: its
+             shipped counterpart is in those pages, so it is neither
+             placed nor unplaced
 
 Coverage is the pair of counts summary.json carries per target: UNWRITTEN
 (todo + attempted: shipped functions with nothing of ours placed at them)
@@ -663,6 +666,20 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
 
     funcs, unpadded, from_lib = _load_objs(objs, icl)
 
+    # A target's `unreadable` (a regex on `module:symbol`) names functions
+    # of ours whose shipped counterparts lie where the image cannot be
+    # read, its `encrypted` pages (a copy protection's encrypted exception
+    # funclets, or a library linked among them): set aside before any
+    # placement, so they neither pair with readable code of their size nor
+    # count as unplaced. Listed below as `encrypted`, once each, when our
+    # own link has them.
+    unreadable = {}
+    if tgt.get("unreadable"):
+        for n in sorted(funcs):
+            if n not in from_lib and re.search(tgt["unreadable"], n):
+                unreadable[n] = len(funcs.pop(n)[0])
+                unpadded.pop(n, None)
+
     # Several of our functions compile to identical code, and the shipped
     # linker folded some of those into one address while emitting others
     # separately. Assign greedily so each of our functions claims a distinct
@@ -1066,6 +1083,10 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             a = layout.get((mod.lower(), sym))
             if a is not None:
                 ours_at[n] = a
+        for n in unreadable:
+            mod, sym = n.split(":", 1)
+            if (mod.lower(), sym) in layout:
+                ours_at[n] = layout[(mod.lower(), sym)]
     placed_at = {}     # symbol -> shipped address
     for (lb, a), n in PLACED_SYMS.items():
         if lb == label and a in matched:
@@ -1453,6 +1474,11 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                   f"link order", file=sys.stderr)
 
     rows = []
+    seen_unreadable = set()
+    for n, size in sorted(unreadable.items()):
+        if (not layout or n in ours_at) and fname(n) not in seen_unreadable:
+            seen_unreadable.add(fname(n))
+            rows.append((label, n, size, "encrypted"))
     # Functions we wrote that did NOT match: instruction-equivalent
     # near-matches, or code simply not linked into this image. Keyed by symbol
     # since we have no address for them.
