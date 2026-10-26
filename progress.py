@@ -1078,6 +1078,175 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         placed_at[n] = a
     our_placed = {ours_at[n] for n in placed_at if n in ours_at} | linked_ours
 
+    # BY REFERENCE. An identical function is the same code in both images,
+    # so every relocated operand in it names the same thing in both: the
+    # dword our link wrote there is a symbol's address in our image, and the
+    # shipped dword at the same offset is that symbol's shipped address (a
+    # rel32 call or jump: the target the displacement reaches). That pairs
+    # functions whose bytes cannot: a callee that compiled to twice or half
+    # the shipped size, or a one-line wrapper among a dozen of the same
+    # shape. A reference to a vtable pairs it with the shipped table, and the
+    # two tables then pair slot for slot -- a slot's position is fixed by the
+    # class declaration, whatever its function compiled to. Evidence that
+    # disagrees with itself (one of our addresses seen with two shipped
+    # ones, or the reverse) is dropped. A function placed this way is
+    # "near"; it takes a shipped address no function is identical or small
+    # at, and displaces a near pairing only when the function paired there
+    # has no reference saying so.
+    by_ref = 0
+    our_img = built_image(tgt) if ours_at else None
+    if our_img:
+        ope = Pe(os.path.join(REPO, our_img))
+        otva, otvs, otrp = ope.secs[".text"]
+
+        def dword(p, va):
+            o = p.va2off(va)
+            return struct.unpack_from("<I", p.d, o)[0] \
+                if o is not None and o + 4 <= len(p.d) else None
+
+        seen_o, seen_s = {}, {}
+        for n, sa in placed_at.items():
+            if sa not in matched or n not in ours_at:
+                continue
+            oa, (code, mask) = ours_at[n], funcs[n]
+            i = 0
+            while i + 4 <= len(code):
+                if not all(j in mask for j in range(i, i + 4)):
+                    i += 1
+                    continue
+                ov, sv = dword(ope, oa + i), dword(pe, sa + i)
+                if ov is None or sv is None:
+                    break
+                op = code[i - 1] if i else None
+                if op in (0xE8, 0xE9) or (i >= 2 and code[i - 2] == 0x0F
+                                          and op is not None
+                                          and 0x80 <= op <= 0x8F):
+                    ov = (oa + i + 4 + ov) & 0xFFFFFFFF
+                    sv = (sa + i + 4 + sv) & 0xFFFFFFFF
+                seen_o.setdefault(ov, set()).add(sv)
+                seen_s.setdefault(sv, set()).add(ov)
+                i += 4
+        ref = {ov: next(iter(svs)) for ov, svs in seen_o.items()
+               if len(svs) == 1 and len(seen_s[next(iter(svs))]) == 1}
+
+        at_ours = {}
+        for n, a in ours_at.items():
+            at_ours.setdefault(a, []).append(n)
+        start_ok = set(starts) | set(matched)
+        claimed_by = {}           # shipped address -> symbol, from evidence
+        claimed_names = set()
+
+        def evidence(oa, sa):
+            if sa not in start_ok or not (in_app(tgt, sa) or _in(
+                    tgt.get("compiler_output") or (), sa)):
+                return
+            if sa in matched or sa in small:
+                return
+            names = [n for n in at_ours.get(oa, ()) if n not in from_lib]
+            if not names:
+                return
+            if any(n in placed_at and placed_at[n] in matched or
+                   n in placed_at and placed_at[n] in small for n in names):
+                return
+            n = sorted(names)[0]
+            if sa in claimed_by or n in claimed_names:
+                return
+            claimed_by[sa] = n
+            claimed_names.add(n)
+
+        for ov, sv in sorted(ref.items()):
+            if otva <= ov < otva + otvs:
+                evidence(ov, sv)
+        # the vtables: our ??_7 symbols' extents from the map, slot by slot
+        vt = []
+        if mapfile:
+            allsyms = []
+            for line in open(os.path.join(REPO, mapfile), errors="replace"):
+                p = line.split()
+                if len(p) >= 4 and re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{8}",
+                                                p[0]) and \
+                        re.fullmatch(r"[0-9a-fA-F]{8}", p[2]):
+                    allsyms.append((int(p[2], 16), p[1]))
+            allsyms.sort()
+            addrs = [a for a, _s in allsyms]
+            # A table nothing identical refers to (its constructor inlined
+            # into an initializer, say) is found by its slots instead: the
+            # shipped table is where the functions of ours already placed
+            # identical stand at the same slots -- at least two of them, and
+            # more agreeing than disagreeing.
+            where_s = None
+            for a, s in allsyms:
+                if not s.startswith("??_7"):
+                    continue
+                j = bisect.bisect_right(addrs, a)
+                end = addrs[j] if j < len(addrs) else a + 4 * 4096
+                nslots = (end - a) // 4
+                if a in ref:
+                    vt.append((a, ref[a], nslots))
+                    continue
+                if where_s is None:
+                    where_s = {}
+                    for sname, (sva, svs, srp) in pe.secs.items():
+                        if sname == ".text":
+                            continue
+                        raw = pe.rawsz.get(sname, svs)
+                        for o in range(0, min(svs, raw) - 3, 4):
+                            v = struct.unpack_from("<I", pe.d, srp + o)[0]
+                            if tva <= v < tva + tvs:
+                                where_s.setdefault(v, []).append(sva + o)
+                slot_ident = []
+                for k in range(nslots):
+                    ov = dword(ope, a + 4 * k)
+                    if ov is None or not (otva <= ov < otva + otvs):
+                        break
+                    sas = {placed_at[n] for n in at_ours.get(ov, ())
+                           if n in placed_at and placed_at[n] in matched}
+                    if len(sas) == 1:
+                        slot_ident.append((k, sas.pop()))
+                votes = {}
+                for k, sa in slot_ident:
+                    for p in where_s.get(sa, ()):
+                        votes[p - 4 * k] = votes.get(p - 4 * k, 0) + 1
+                if not votes:
+                    continue
+                base = max(sorted(votes), key=lambda b: votes[b])
+                bad = sum(1 for k, sa in slot_ident
+                          if dword(pe, base + 4 * k) != sa)
+                if votes[base] >= 2 and votes[base] > bad:
+                    vt.append((a, base, nslots))
+        for oa, sa, nslots in vt:
+            for k in range(nslots):
+                ov, sv = dword(ope, oa + 4 * k), dword(pe, sa + 4 * k)
+                if ov is None or sv is None or \
+                        not (otva <= ov < otva + otvs) or \
+                        not (tva <= sv < tva + tvs):
+                    break
+                evidence(ov, sv)
+        for sa, n in sorted(claimed_by.items()):
+            if n in placed_at and placed_at[n] == sa:
+                continue
+            old = paired.get(sa)
+            if old is not None and old in claimed_names:
+                continue
+            if old is not None:
+                del paired[sa]
+                placed_at.pop(old, None)
+            if n in placed_at:
+                b = placed_at.pop(n)
+                if paired.get(b) == n:
+                    del paired[b]
+            NEAR_PAIRS[:] = [r for r in NEAR_PAIRS if not (
+                r[0] == label and (r[1] == sa or r[3] == n))]
+            paired[sa] = n
+            placed_at[n] = sa
+            NEAR_PAIRS.append((label, sa, sizes.get(sa, 0), n,
+                               len(bytes(funcs[n][0]).rstrip(b"\x90\xcc"))))
+            by_ref += 1
+        our_placed = {ours_at[n] for n in placed_at if n in ours_at} | \
+            linked_ours
+        if by_ref:
+            print(f"  {label}: placed {by_ref} by reference", file=sys.stderr)
+
     # An inline function from a header is a COMDAT in every object that
     # includes it, and every copy is the same function: the linker keeps one.
     # Placing any copy places them all. Not so the names the compiler makes
@@ -1237,6 +1406,29 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         for obj, ws in sorted(cand.items()):
             us = [n for _o, n in mine_now(
                 lambda n, obj=obj: n.split(":", 1)[0] == obj)]
+            # ... but where it does, order says more than size: between
+            # two of X's placed functions whose order agrees in both
+            # images, X's unplaced ones there are aligned with the shipped
+            # ones there in order first (_align), and only what that leaves
+            # is matched by size.
+            # (anchors: X's own functions, not the per-object initializer
+            # names nor the COMDATs any object may supply, which are placed
+            # by shape wherever one fits)
+            mine_o = sorted((ours_at[n], n) for n in us if n in ours_at)
+            ch = [(-1, lo)] + chain_of(
+                (ours_at[n], a) for n, a in placed_at.items()
+                if n in ours_at and n.split(":", 1)[0] == obj
+                and not co_sym(n) and _obj_local(n)) + [(1 << 40, hi)]
+            for (o1, r1), (o2, r2) in zip(ch, ch[1:]):
+                u = [(n, body_len(funcs[n][0])) for o, n in mine_o
+                     if o1 < o < o2 and n not in placed_at]
+                w = [(a, sizes[a]) for a in ws if r1 < a < r2 and a in free]
+                if not u or not w or len(u) * len(w) > 250000:
+                    continue
+                for n, a in _align(u, w):
+                    if fits(n, a):
+                        place(n, a, "object")
+            us = [n for n in us if n not in placed_at]
             pairs = []
             for n in us:
                 su = body_len(funcs[n][0])
