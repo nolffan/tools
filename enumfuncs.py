@@ -13,6 +13,10 @@ single one is complete:
                                           — global-initializer groups, whose
                                             atexit registration nothing else
                                             references
+  4e. the `jmp rel32` target of an exception-unwind funclet (`lea/mov
+     ecx,...; jmp`), a rule-2 start
+                                          — destructors reached only when
+                                            unwinding
   5. code that follows a `ret` (past padding) with a recognizable prologue
      and that nothing else references
                                           — functions only reached indirectly
@@ -266,6 +270,43 @@ def enumerate_functions(img):
             if p > off + 11 and p < len(text) and (tlo + p) % 16 == 0:
                 add(tlo + p, "stub")
 
+    # 4e. what an exception-unwind funclet tail-jumps to. A /GX funclet
+    #     (`__unwindfunclet$...`, in the image's .text$x tail and named by
+    #     an unwind map in .rdata, so rule 2 already has it) is `this` for
+    #     the object being unwound loaded into ecx and a jump to its
+    #     destructor: `lea/mov ecx,<frame slot>` or `mov ecx,imm32`, then
+    #     `jmp rel32`. A destructor that is inlined everywhere it is called
+    #     but still needed for unwinding is reached ONLY from such jumps:
+    #     ServerDir.dll's ~CWinSync_CSAuto (0x100016a0, 10 bytes:
+    #     LeaveCriticalSection), ~CWinSync_CS, ~CWinSync_Event and
+    #     STLport's ~_Node_Alloc_Lock, 38 funclets jumping to the first. Without
+    #     this each merged into the row before it.
+    #       8d 4d d8 | 8d 8d d32 | 8d 4c 24 d8 | 8d 8c 24 d32   lea ecx,...
+    #       8b 4d d8 | 8b 8d d32 | 8b 4c 24 d8 | 8b 8c 24 d32   mov ecx,...
+    #       b9 imm32                                           mov ecx,imm
+    #     optionally followed by `add ecx,imm` for a member (ServerDir's
+    #     ~CWinSync_Event, 0x10006360: `mov ecx,[ebp-0x10]; add ecx,0x28`).
+    for va in [v for v, t in list(src.items()) if t == "ptr"]:
+        off = va - tlo
+        if not 0 <= off < len(text) - 12:
+            continue
+        b0, b1 = text[off], text[off + 1]
+        n = None
+        if b0 == 0xB9:
+            n = 5
+        elif b0 in (0x8D, 0x8B):
+            n = {0x4D: 3, 0x8D: 6}.get(b1)
+            if n is None and text[off + 2] == 0x24:
+                n = {0x4C: 4, 0x8C: 7}.get(b1)
+        # a member's destructor: `add ecx,imm8|imm32` after the load
+        if n and text[off + n] == 0x83 and text[off + n + 1] == 0xC1:
+            n += 3
+        elif n and text[off + n] == 0x81 and text[off + n + 1] == 0xC1:
+            n += 6
+        if n and off + n + 5 <= len(text) and text[off + n] == 0xE9:
+            add(tlo + off + n + 5 + struct.unpack_from("<i", text, off + n + 1)[0],
+                "unwind")
+
     # 5. exports
     for va, nm in img.exports().items():
         src[va] = "export"
@@ -396,7 +437,7 @@ def main():
     tally = Counter(src.values())
     print(f"{img.path}: .text {tlo:#x}-{thi:#x} ({thi-tlo} bytes)")
     print(f"functions enumerated : {len(starts)}")
-    for k in ("call", "ptr", "cb", "setup", "init", "export", "gap"):
+    for k in ("call", "ptr", "cb", "setup", "init", "unwind", "export", "gap"):
         if tally.get(k):
             print(f"   via {k:<7}: {tally[k]}")
     print(f"bytes in functions   : {covered} / {thi-tlo}  ({100*covered/(thi-tlo):.1f}%)")
@@ -405,10 +446,13 @@ def main():
         out = sys.argv[sys.argv.index("--csv") + 1]
         exp = img.exports()
         tags = tag_functions(img, starts)
-        with open(out, "w") as f:
+        # a new file renamed over the old one: in a worktree the table may
+        # be a hard link to another tree's (tools/agentwt.sh)
+        with open(out + ".tmp", "w") as f:
             f.write("addr,size,source,name\n")
             for a in starts:
                 f.write(f"0x{a:08x},{sizes[a]},{src[a]},{exp.get(a) or tags.get(a,'')}\n")
+        os.replace(out + ".tmp", out)
         print(f"wrote {out}")
 
 
