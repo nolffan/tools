@@ -9,7 +9,11 @@ the functions (name + byte size) and classifies our build of each as:
   near       we have the function but bytes differ (compiler-revision variance)
   small      we have the function but it is almost entirely relocations, so
              there is nothing for the oracle to anchor on (global-initializer
-             COMDATs); reconstructed, not verified
+             COMDATs), and not every relocation in it is known to name the
+             same thing in both linked images; reconstructed, not verified.
+             (One whose every relocation is -- through the address mapping
+             the identical functions prove -- is identical: VERIFYING THE
+             SMALL ONES in _rows_for_image.)
   attempted  no match and no pairing, but there is evidence the address has
              been worked on (cited in src/, or recorded in progress/*.csv)
   todo       the shipped function has no counterpart in our build yet
@@ -59,6 +63,7 @@ tools/ratchet.py compares those with the recorded baseline in progress/.
 Usage:
   progress.py [--nears[=target]]
               [--todo|--attempted|--near|--small|--unplaced|--unlinked|--driver[=target]]
+              [--refuted[=target]]
 
 --nears prints the near-match worklist instead of the summary: one line per
 paired function with the shipped address, both sizes and the byte delta,
@@ -88,6 +93,13 @@ PLACED_SYMS = {}
 # shape): (label, shipped address) -> "module:symbol". Weaker evidence
 # than PLACED_SYMS, so kept apart.
 SMALL_SYMS = {}
+# The small functions whose relocated operands, compared through the
+# address mapping the identical functions prove, name something else at
+# their placement: (label, shipped address, ours, offset, our operand,
+# the symbol of ours it is, the shipped address it maps to or None (the
+# shipped operand is another of ours), the shipped operand). Real
+# differences, or the wrong placement; `--refuted` lists them.
+SMALL_REFUTED = []
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from objdiff import parse_obj  # noqa: E402
@@ -576,11 +588,12 @@ def _load_objs(objs, icl=False):
     dict silently drops all but the last -- which loses whole initializer
     groups from the count. A library member's module is `lib(member)`, as
     the map names it."""
-    funcs, unpadded, from_lib = {}, {}, set()
+    funcs, unpadded, from_lib, kinds = {}, {}, set(), {}
     scored_libs = {l.lower() for l, _p in LIBS}
 
     def add(mod, data, lib_scored):
-        for k, v in parse_obj_masked(data).items():
+        rk = {}
+        for k, v in parse_obj_masked(data, rk).items():
             # instantiation drivers exist only to make VC6 emit template
             # COMDATs; they are ours, not Monolith's, and must neither score
             # nor pair
@@ -609,6 +622,7 @@ def _load_objs(objs, icl=False):
                 if body != code:
                     unpadded[key] = (body, {i for i in mask if i < len(body)})
             funcs[key] = v
+            kinds[key] = rk.get(k, {})
             if lib_scored:
                 from_lib.add(key)
 
@@ -623,7 +637,7 @@ def _load_objs(objs, icl=False):
                         open(m, "rb").read(), stem.lower() in scored_libs)
         else:
             add(os.path.basename(o), open(q, "rb").read(), False)
-    return funcs, unpadded, from_lib
+    return funcs, unpadded, from_lib, kinds
 
 
 def _restore_iat_calls(tgt, text, tva):
@@ -664,7 +678,7 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     text = _restore_iat_calls(tgt, pe.d[trp : trp + tvs], tva)
     img, starts, sizes = _enum_with_sizes(p, label)
 
-    funcs, unpadded, from_lib = _load_objs(objs, icl)
+    funcs, unpadded, from_lib, rkinds = _load_objs(objs, icl)
 
     # A target's `unreadable` (a regex on `module:symbol`) names functions
     # of ours whose shipped counterparts lie where the image cannot be
@@ -1272,6 +1286,312 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             linked_ours
         if by_ref:
             print(f"  {label}: placed {by_ref} by reference", file=sys.stderr)
+
+        # VERIFYING THE SMALL ONES. A `small` function's bytes are almost
+        # all relocations, so the masked comparison says nothing -- but in
+        # the two LINKED images the relocations are resolved, and what each
+        # one names can be compared through a mapping of our addresses to
+        # the shipped ones. The mapping is built only from what is already
+        # proven: the relocated operands of the identical functions (the
+        # COFF relocation's type says what the dword is: an address, or a
+        # rel32 displacement whose target is the address), the identical
+        # functions' own addresses, the slots of the vtables those operands
+        # pair, and the import slots, which both images name. One of our
+        # addresses seen with two shipped ones, or the reverse, is a
+        # contradiction and maps nothing. A short function of ours whose
+        # unmasked bytes match a shipped function of exactly its length,
+        # and whose EVERY relocated operand maps to the shipped operand at
+        # the same offset, is identical. Its own address then maps too, so
+        # the pass repeats until nothing new is proven (an initializer
+        # thunk calls a constructor that is itself small).
+        #
+        # Where it is tried: at the shipped address its own address maps to
+        # (a call from identical code, a vtable slot), at the address the
+        # shape placed it, and, when every operand maps, at any shipped
+        # function of its length -- a shape recurring a dozen times was
+        # placed at an arbitrary one of them, and the operands say which.
+        # A function placed small that verifies nowhere is REFUTED if one
+        # of its operands at its placement maps elsewhere (the shipped
+        # operand is a different thing of ours, or ours names something
+        # else in the shipped image): a real difference, or the wrong
+        # placement. Otherwise it stays small: not everything it names is
+        # known.
+        s_lo, s_hi = tva, tva + len(text)
+        # (an image scored twice, for its remainders: the second run's)
+        SMALL_REFUTED[:] = [r for r in SMALL_REFUTED if r[0] != label]
+
+        def operand(which, fa, off, kind):
+            if which is pe and s_lo <= fa + off < s_hi - 3:
+                v = struct.unpack_from("<I", text, fa + off - tva)[0]
+            else:
+                v = dword(which, fa + off)
+            if v is None:
+                return None
+            if kind == 0x14:                    # REL32
+                return (fa + off + 4 + v) & 0xFFFFFFFF
+            if kind == 0x06:                    # DIR32
+                return v
+            if kind == 0x07:                    # DIR32NB, an RVA
+                return (v + which.base) & 0xFFFFFFFF
+            return None
+
+        def blen(n):
+            code = funcs[n][0]
+            end = len(code)
+            while end > 0 and code[end - 1] in (0x90, 0xCC):
+                end -= 1
+            return len(strip_pad(bytes(code[:end]))) if icl else end
+
+        def imports_by_name(p):
+            out, dup = {}, set()
+            for slot, nm in p.imports().items():
+                if not nm or nm.endswith("…") or nm.endswith("!None"):
+                    continue
+                if nm in out:
+                    dup.add(nm)
+                out[nm] = slot
+            return {k: v for k, v in out.items() if k not in dup}
+
+        o_imp, s_imp = imports_by_name(ope), imports_by_name(pe)
+        verified = {}          # shipped address -> ours, verified here
+        ident_n = {n: sa for n, sa in placed_at.items()
+                   if sa in matched and n in ours_at}
+
+        def mapping():
+            fwd, rev = {}, {}
+
+            def note(ov, sv):
+                fwd.setdefault(ov, set()).add(sv)
+                rev.setdefault(sv, set()).add(ov)
+
+            for n, sa in ident_n.items():
+                oa = ours_at[n]
+                note(oa, sa)
+                for off, kind in rkinds.get(n, {}).items():
+                    ov = operand(ope, oa, off, kind)
+                    sv = operand(pe, sa, off, kind)
+                    if ov is not None and sv is not None:
+                        note(ov, sv)
+            for nm, slot in o_imp.items():
+                if nm in s_imp:
+                    note(slot, s_imp[nm])
+
+            def unique(f, r):
+                return {o: next(iter(ss)) for o, ss in f.items()
+                        if len(ss) == 1 and len(r[next(iter(ss))]) == 1}
+            m = unique(fwd, rev)
+            # the vtables the operands pair, slot by slot
+            for oa, sa, nslots in vt:
+                if m.get(oa) != sa:
+                    continue
+                for k in range(nslots):
+                    ov, sv = dword(ope, oa + 4 * k), dword(pe, sa + 4 * k)
+                    if ov is None or sv is None or \
+                            not (otva <= ov < otva + otvs) or \
+                            not (tva <= sv < tva + tvs):
+                        break
+                    note(ov, sv)
+            m = unique(fwd, rev)
+            return m, set(m.values())
+
+        def check(n, sa, m, seen_s):
+            """'ok', 'refuted' (with the offset), 'unmapped' or 'bytes'."""
+            if not fits_at(n, sa):
+                return "bytes", None
+            end = blen(n)
+            oa, res = ours_at[n], ("ok", None)
+            for off, kind in sorted(rkinds.get(n, {}).items()):
+                if off >= end:
+                    continue
+                ov = operand(ope, oa, off, kind)
+                sv = operand(pe, sa, off, kind)
+                if ov is None or sv is None:
+                    res = ("unmapped", None)
+                    continue
+                if ov in m:
+                    if m[ov] != sv:
+                        return "refuted", (off, ov, m[ov], sv)
+                elif sv in seen_s:
+                    return "refuted", (off, ov, None, sv)
+                else:
+                    res = ("unmapped", None)
+            return res
+
+        holder = {a: n for (lb, a), n in SMALL_SYMS.items()
+                  if lb == label and a in small}
+        small_at = {n: a for a, n in holder.items()}
+        tiny_ours = sorted(n for n in tiny if n in ours_at and n not in from_lib)
+        by_len = {}
+        for a in starts:
+            if in_app(tgt, a) and a not in matched and sizes.get(a, 0) > 0:
+                body = text[a - tva:a - tva + sizes[a]]
+                by_len.setdefault(len(strip_pad(bytes(body))) if icl
+                                  else sizes[a], []).append(a)
+        def fits_at(n, a):
+            """n's shape at a, as the small placement above requires."""
+            code, mask = funcs[n]
+            end = blen(n)
+            if icl:
+                body = strip_pad(bytes(text[a - tva:a - tva + sizes.get(a, 0)]))
+                if len(body) != end:
+                    return False
+            elif sizes.get(a) != end:
+                return False
+            return all(i in mask or text[a - tva + i] == code[i]
+                       for i in range(end))
+
+        def refill(a):
+            """An address a verified function moved away from: given, by
+            shape, to a short function of ours placed nowhere yet."""
+            # (any of them, as the shape placement above takes)
+            for n in sorted(tiny):
+                if n not in placed_small and n not in placed_at and \
+                        n not in from_lib and fits_at(n, a):
+                    holder[a], small_at[n] = n, a
+                    small.add(a)
+                    SMALL_SYMS[(label, a)] = n
+                    placed_small.add(n)
+                    placed_at[n] = a
+                    return
+
+        moved = 0
+        while True:
+            m, seen_s = mapping()
+            new = 0
+            for n in tiny_ours:
+                if n in ident_n:
+                    continue
+                oa = ours_at[n]
+                cand = []
+                if oa in m:
+                    cand.append(m[oa])
+                if n in small_at:
+                    cand.append(small_at[n])
+                rel = rkinds.get(n, {})
+                if rel and all(operand(ope, oa, o, k) in m
+                               for o, k in rel.items()):
+                    cand += by_len.get(blen(n), [])
+                for sa in dict.fromkeys(cand):
+                    if sa in matched or not in_app(tgt, sa):
+                        continue
+                    if paired.get(sa, n) != n:
+                        continue
+                    if check(n, sa, m, seen_s)[0] != "ok":
+                        continue
+                    # proven: identical at sa
+                    s0 = small_at.pop(n, None)
+                    if s0 is not None and s0 != sa:
+                        moved += 1
+                        # what was at sa takes n's old address if its
+                        # shape fits there, else it is placed nowhere
+                        n2 = holder.pop(sa, None)
+                        del holder[s0]
+                        small.discard(s0)
+                        SMALL_SYMS.pop((label, s0), None)
+                        if n2 is not None:
+                            small_at.pop(n2, None)
+                            if fits_at(n2, s0):
+                                holder[s0], small_at[n2] = n2, s0
+                                small.add(s0)
+                                SMALL_SYMS[(label, s0)] = n2
+                                placed_at[n2] = s0
+                            else:
+                                placed_small.discard(n2)
+                                placed_at.pop(n2, None)
+                                refill(s0)
+                        else:
+                            refill(s0)
+                    elif s0 is None and sa in holder:
+                        n2 = holder.pop(sa)
+                        small_at.pop(n2, None)
+                        placed_small.discard(n2)
+                        placed_at.pop(n2, None)
+                    else:
+                        holder.pop(sa, None)
+                    small.discard(sa)
+                    SMALL_SYMS.pop((label, sa), None)
+                    if paired.get(sa) == n:
+                        del paired[sa]
+                        NEAR_PAIRS[:] = [r for r in NEAR_PAIRS
+                                         if not (r[0] == label and r[1] == sa)]
+                    matched[sa] = sizes[sa]
+                    PLACED_SYMS[(label, sa)] = n
+                    placed_at[n] = sa
+                    placed_small.add(n)
+                    ident_n[n] = sa
+                    verified[sa] = n
+                    new += 1
+                    break
+            if not new:
+                break
+        # What is left was placed by shape alone, and a shape that recurs
+        # (an initializer thunk, a one-store destructor) was given an
+        # arbitrary one of its addresses. Where an operand that maps says
+        # that address is another function's, move the function to an
+        # address of its shape where nothing that maps disagrees: a free
+        # one, or one whose own holder is refuted there and fits here.
+        # Still small -- not everything it names is known -- but no longer
+        # refuted by what is.
+        def state(n, a):
+            return check(n, a, m, seen_s)[0]
+
+        def put(n, a):
+            holder[a], small_at[n] = n, a
+            small.add(a)
+            SMALL_SYMS[(label, a)] = n
+            placed_at[n] = a
+
+        reseated = 0
+        for _round in range(4):
+            again = 0
+            for n, s0 in sorted(small_at.items(), key=lambda kv: kv[1]):
+                if small_at.get(n) != s0 or n not in ours_at or \
+                        state(n, s0) != "refuted":
+                    continue
+                for a in by_len.get(blen(n), ()):
+                    if a == s0 or a in matched or paired.get(a, n) != n or \
+                            state(n, a) != "unmapped":
+                        continue
+                    h = holder.get(a)
+                    if h is None:
+                        del holder[s0]
+                        small.discard(s0)
+                        SMALL_SYMS.pop((label, s0), None)
+                        put(n, a)
+                        refill(s0)
+                    elif h in ours_at and state(h, a) == "refuted" and \
+                            fits_at(h, s0):
+                        put(n, a)
+                        put(h, s0)
+                    else:
+                        continue
+                    again += 1
+                    break
+            reseated += again
+            if not again:
+                break
+
+        refuted = 0
+        for n, s0 in sorted(small_at.items(), key=lambda kv: kv[1]):
+            if n not in ours_at:
+                # (a copy our own link did not keep: nothing to read)
+                continue
+            st, why = check(n, s0, m, seen_s)
+            if st == "refuted":
+                refuted += 1
+                off, ov, want_s, got_s = why
+                j = bisect.bisect_right(addrs, ov) - 1
+                what = "%s+0x%x" % (allsyms[j][1], ov - allsyms[j][0]) \
+                    if j >= 0 else "?"
+                SMALL_REFUTED.append((label, s0, n, off, ov,
+                                      what.replace("+0x0", ""), want_s, got_s))
+        print(f"  {label}: small verified by relocation {len(verified)} "
+              f"({moved} moved to the address their operands name), "
+              f"refuted {refuted}, unmapped {len(small_at) - refuted} "
+              f"({reseated} moved off an address an operand refuted)",
+              file=sys.stderr)
+        our_placed = {ours_at[n] for n in placed_at if n in ours_at} | \
+            linked_ours
 
     # An inline function from a header is a COMDAT in every object that
     # includes it, and every copy is the same function: the linker keeps one.
@@ -1883,6 +2203,19 @@ def main():
             print(f"{r[0]:<14} {r[1]:<16} {r[2]:>7}")
         print(f"\n{len(sel)} row(s), {sum(r[2] for r in sel)} bytes")
         return
+
+    for a in sys.argv[1:]:
+        if a == "--refuted" or a.startswith("--refuted="):
+            pick = a.split("=", 1)[1] if "=" in a else ""
+            sel = [r for r in SMALL_REFUTED if r[0].startswith(pick)]
+            for label, sa, n, off, ov, what, want_s, got_s in sel:
+                print(f"{label:<14} 0x{sa:08x} {n}\n{'':<14} +{off}: ours "
+                      f"0x{ov:08x} {what}, maps to "
+                      + (f"0x{want_s:08x}" if want_s is not None
+                         else "nothing (the shipped one is another of ours)")
+                      + f"; shipped 0x{got_s:08x}")
+            print(f"\n{len(sel)} refuted small function(s)")
+            return
 
     want = None
     for a in sys.argv[1:]:
