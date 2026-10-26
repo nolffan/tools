@@ -1171,6 +1171,12 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             n = sorted(names)[0]
             if sa in claimed_by or n in claimed_names:
                 return
+            # a name that says where it ships (sub_<addr>, own_symbols,
+            # own_names) outranks a reference: look-alike callers, paired
+            # among themselves by position, refer to each other's callees
+            pin = _own_addr(tgt, n, funcs)
+            if pin is not None and pin != sa:
+                return
             claimed_by[sa] = n
             claimed_names.add(n)
 
