@@ -20,6 +20,10 @@ single one is complete:
   4f. a 16-aligned `movl $vtbl,(%ecx); ret` behind padding
                                           — one-store destructors whose
                                             callers inlined them
+  4g. the `jmp rel32` target of an atexit exit thunk (`mov ecx,imm32;
+     jmp`, pushed and handed to atexit)
+                                          — destructors inlined everywhere
+                                            else
   5. code that follows a `ret` (past padding) with a recognizable prologue
      and that nothing else references
                                           — functions only reached indirectly
@@ -151,9 +155,12 @@ def enumerate_functions(img):
     # 3. `push imm32` operands that land in .text — callbacks handed to the
     #    API (DLGPROCs, WNDPROCs, enumeration callbacks). These are neither
     #    call targets nor stored in a table, so nothing else finds them.
+    registered = set()      # pushed and then called with (rule 4g)
     for off in range(len(text) - 5):
         if text[off] == 0x68:
             add(struct.unpack_from("<I", text, off + 1)[0], "cb")
+            if off + 5 < len(text) and text[off + 5] == 0xE8:
+                registered.add(struct.unpack_from("<I", text, off + 1)[0])
 
     # 3b. `movl $imm32, disp(%reg)` operands that land in .text -- a function
     #     address STORED INTO A TABLE AT RUN TIME rather than laid out in one.
@@ -226,10 +233,12 @@ def enumerate_functions(img):
             if tlo <= _v < thi:
                 data_ptrs.add(_v)
 
+    initializers = set()    # the `call` halves (rule 4c)
     for off in range(len(text) - 10):
         if text[off] == 0xE8 and text[off + 5] == 0xE9 and tlo + off in data_ptrs:
             add(tlo + off + 5 + struct.unpack_from("<i", text, off + 1)[0], "init")
             add(tlo + off + 10 + struct.unpack_from("<i", text, off + 6)[0], "init")
+            initializers.add(tlo + off + 5 + struct.unpack_from("<i", text, off + 1)[0])
 
     # 4b. a THUNK's target. Rule 4 handles `call ??__E<var>; jmp <atexit>`,
     #     but the commonest `$E` in these images is the degenerate form: a
@@ -265,7 +274,12 @@ def enumerate_functions(img):
     #     found qualifies: the same byte pattern at a `call`/`cb` start is
     #     ordinary code (a thiscall tail jump) in all the other hits (21 in
     #     server.dll and lithtech.exe, 31 in NOLF.exe).
-    for va in [v for v, t in list(src.items()) if t == "thunk"]:
+    #     The same initializer reached by rule 4's `call` (a `$E` thunk
+    #     `call ??__E<var> ; jmp <registrar>`) qualifies too: Object.lto
+    #     0x1016c1d0 -> CDebrisMgrPlugin::CDebrisMgrPlugin 0x1016c200,
+    #     which had merged into the exit thunk in front of it (0x1016c1f0,
+    #     25 bytes, really 10).
+    for va in [v for v, t in list(src.items()) if t == "thunk"] + sorted(initializers):
         off = va - tlo
         if 0 <= off < len(text) - 10 and text[off] == 0xB9 \
                 and text[off + 5] == 0xE9:
@@ -345,6 +359,27 @@ def enumerate_functions(img):
         if text[off] == 0xC7 and text[off + 1] == 0x01 \
                 and text[off + 6] == 0xC3 and text[off - 1] in (0x90, 0xCC):
             add(tlo + off, "stub")
+
+    # 4g. the destructor an atexit EXIT thunk tail-jumps to. The exit thunk
+    #     of a global (or function-static) class object is `mov $&obj,%ecx;
+    #     jmp ??1Class` (b9 imm32 e9 rel32), its own address pushed and
+    #     handed to `atexit` (`push $thunk ; call`, rule 3). When every
+    #     other caller inlined the destructor, that jmp is its only
+    #     reference, and the 10-byte thunk and the destructor merged into
+    #     one row matching neither COMDAT: lithtech.exe 0x50a0c0 (27 bytes;
+    #     ~CScreenGlowMgr at 0x50a0d0, `add ecx,0x220 ; jmp
+    #     ~CRenderStyleMap`), 0x509790 -> ~CPixelShaderMgr 0x509620 (until
+    #     now an extent split), server.dll 0x100135f2 (15 bytes; the
+    #     ltmodule database's 5-byte shutdown destructor at 0x100135fc,
+    #     behind a `jmp $+5`). Only a pushed address that is then called
+    #     with, whose immediate is a data address (not code).
+    for va in registered:
+        off = va - tlo
+        if 0 <= off < len(text) - 10 and text[off] == 0xB9 \
+                and text[off + 5] == 0xE9 \
+                and not tlo <= struct.unpack_from("<I", text, off + 1)[0] < thi:
+            add(tlo + off + 10 + struct.unpack_from("<i", text, off + 6)[0],
+                "thunk")
 
     # 5. exports
     for va, nm in img.exports().items():
