@@ -53,14 +53,20 @@ import targets as cfg  # noqa: E402
 # The README's rows, in progress/targets.py's order: (label, what it is, the
 # targets it adds up). Libraries scored on their own (cfg.LIBS) share one
 # row.
-ROWS = [("`%s`" % t["label"], t["what"], [t["label"]])
+def _cell(text):
+    """Text for a table cell: a bare | would start a new column
+    ("Softimage|3D" shifted the rest of its row), so it is escaped."""
+    return text.replace("|", "\\|")
+
+
+ROWS = [(_cell("`%s`" % t["label"]), _cell(t["what"]), [t["label"]])
         for t in cfg.TARGETS if t["kind"] != "resources"]
 if cfg.LIBS:
     ROWS.append(("libraries", "the shared libraries", [l for l, _p in cfg.LIBS]))
 # Rows listed after ROWS but left out of the total: resource-only images,
 # scored resource by resource (tools/progress.py, rows_for_resources). Their
 # data is not code, so it is not added to the total.
-RES_ROWS = [("`%s`" % t["label"], t["what"], [t["label"]])
+RES_ROWS = [(_cell("`%s`" % t["label"]), _cell(t["what"]), [t["label"]])
             for t in cfg.TARGETS if t["kind"] == "resources"]
 # what names the shipped libraries' directory, for the messages below
 LIBS_ENV = cfg.SHIPPED_ENV or "the shipped libraries' variable"
