@@ -683,7 +683,9 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     # in those pages can be placed there; the rows stay `encrypted`
     # (region()), listed and not counted. The project's build makes it
     # before scoring; without it the target scores as before.
-    if tgt.get("readable") and os.path.exists(os.path.join(REPO, tgt["readable"])):
+    readable = bool(tgt.get("readable")) and \
+        os.path.exists(os.path.join(REPO, tgt["readable"]))
+    if readable:
         p = os.path.join(REPO, tgt["readable"])
     pe = Pe(p)
     tva, tvs, trp = pe.secs[".text"]
@@ -1852,9 +1854,11 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         theirs_count = dict.fromkeys(mine_by_shape, 0)
         # The short functions in a target's `compiler_output` ranges are
         # what ours of the same shape compiled to: they count against our
-        # surplus as the image's own code does (their rows stay `crt`).
+        # surplus as the image's own code does (their rows stay `crt`). So
+        # do the `encrypted` pages' when the target is `readable`.
         for a in starts:
-            if not (in_app(tgt, a) or _in(co_ranges, a)):
+            if not (in_app(tgt, a) or _in(co_ranges, a) or
+                    (readable and _in(tgt.get("encrypted"), a))):
                 continue
             off = a - tva
             body = text[off:off + sizes.get(a, 0)]
