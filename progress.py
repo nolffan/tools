@@ -931,8 +931,23 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     # a shape match is exact, while one with a relocation (`mov eax, <addr>;
     # ret`) fits every sibling of its shape. In name order the second kind
     # could take the address of the first.
+    # A copy our link did not keep (a COMDAT duplicate, or one /OPT:ICF
+    # folded into another object's identical function) is not in our image:
+    # the copies the map names are tried first, so that what is placed
+    # where can be verified through our image. Which object's copy the
+    # linker keeps for a folded group changes with any function added to
+    # or removed from the link.
+    _lay = {(m.lower(), s) for (m, s) in (_our_layout(mapfile) or {})}
+
+    def _linked(n):
+        if not _lay or ":" not in n:
+            return True
+        mod, sym = n.split(":", 1)
+        return (mod.lower(), sym) in _lay
+
     for n, (code, mask) in sorted(tiny.items(),
-                                  key=lambda kv: (len(kv[1][1]) > 0, kv[0])):
+                                  key=lambda kv: (len(kv[1][1]) > 0,
+                                                  not _linked(kv[0]), kv[0])):
         # a COMDAT is padded out to alignment; the function is what precedes it
         end = len(code)
         while end > 0 and code[end - 1] in (0x90, 0xCC):
