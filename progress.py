@@ -31,7 +31,10 @@ the functions (name + byte size) and classifies our build of each as:
              SecuROM pages of Lithtech.exe): listed, not counted. Also
              (ours) a function the target's `unreadable` names: its
              shipped counterpart is in those pages, so it is neither
-             placed nor unplaced
+             placed nor unplaced. With the target's `readable` (a copy of
+             the image with those pages filled in from another build of
+             the same code), the pages are read from it, so functions of
+             ours are placed there; the rows stay `encrypted`
 
 Coverage is the pair of counts summary.json carries per target: UNWRITTEN
 (todo + attempted: shipped functions with nothing of ours placed at them)
@@ -673,6 +676,15 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     label = tgt["label"]
     icl = bool(tgt.get("icl"))
     p = os.path.join(REPO, tgt["shipped"])
+    # A target's `readable`: a copy of the shipped image whose `encrypted`
+    # pages are filled in from another build of the same code (a demo's
+    # unprotected engine, tools/demoimports.py plain). The image is read
+    # and enumerated from it, so functions of ours whose counterparts lie
+    # in those pages can be placed there; the rows stay `encrypted`
+    # (region()), listed and not counted. The project's build makes it
+    # before scoring; without it the target scores as before.
+    if tgt.get("readable") and os.path.exists(os.path.join(REPO, tgt["readable"])):
+        p = os.path.join(REPO, tgt["readable"])
     pe = Pe(p)
     tva, tvs, trp = pe.secs[".text"]
     text = _restore_iat_calls(tgt, pe.d[trp : trp + tvs], tva)
