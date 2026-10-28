@@ -64,6 +64,28 @@ YX_FIRST = {"serverdir": "stdafx.obj"}
 _spelling = {}
 
 
+def load_spellings(path):
+    """The spellings earlier runs gave directories that do not exist yet.
+    Each workspace is converted by a run of its own, and two projects may
+    spell one output directory differently (`built\\Release`, `built\\release`):
+    on a tree where it is already built the disk decides, on a clean one the
+    first spelling must hold for every workspace, or one project's output
+    and another's input are two names for make."""
+    try:
+        for line in open(path):
+            here, comp, real = line.rstrip("\n").split("\t")
+            _spelling.setdefault((here, comp), real)
+    except (OSError, ValueError):
+        pass
+
+
+def save_spellings(path):
+    data = "".join(f"{h}\t{c}\t{r}\n" for (h, c), r in sorted(_spelling.items()))
+    if not os.path.exists(path) or open(path).read() != data:
+        with open(path, "w") as f:
+            f.write(data)
+
+
 def canon(path, leaf=True):
     """`path` (/-separated, relative to the tree root) as the disk spells it,
     matching each component case-insensitively as Windows does; a component
@@ -246,6 +268,8 @@ def main():
     if len(sys.argv) < 5:
         sys.exit(__doc__)
     dsw, want, out_mk = sys.argv[1], sys.argv[2], sys.argv[3]
+    spellings = os.path.join(os.path.dirname(out_mk) or ".", "dsp2mk-spellings.tsv")
+    load_spellings(spellings)
     wsdir = os.path.dirname(dsw)                    # relative to the tree root
     projects = parse_dsw(dsw)
 
@@ -428,6 +452,7 @@ def main():
     if not os.path.exists(out_mk) or open(out_mk).read() != data:
         with open(out_mk, "w") as f:
             f.write(data)
+    save_spellings(spellings)
 
 
 if __name__ == "__main__":
