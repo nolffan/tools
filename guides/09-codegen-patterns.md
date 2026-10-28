@@ -2151,13 +2151,109 @@ inline helpers nothing compiled used (CPrePoly's `CalcCenter`,
 `CalcExtents`, `OverlapExtents`) brought it back. So after any header edit,
 re-check every module already matched against the image, not only the one
 being worked on. When a match flips with no source change of its own, count
-declarations before suspecting anything else.
+declarations before suspecting anything else. (Worked out below, "The declaration count
+is a symbol count, mod 64": a change can be weighed and paid for.)
 
 **Which end of the function loses.** In the experiment above the calls left
 out of line were the LAST ones. The inline-budget bullet under "Levers that
 closed register allocation verdicts" says the EARLIEST sites are refused.
 Both are observations from real code. Until a case settles it, take the
 order as unknown and try both directions.
+
+## The declaration count is a symbol count, mod 64
+
+Measured on talon's Processor.exe (cl 12.00.8966 /O2), 2026-10-28, about
+four hundred builds. It explains the two "threshold" notes above (the
+BspGen one and tcpdriver's `HandleConnPacket`) and replaces their advice
+("count declarations") with a rule that can be calculated.
+
+**What flips.** Always code the inliner expanded from a template or an
+implicit member: the operand order of `m_nElements + m_Cache.GetCacheSize()`
+in an inlined `CMoArray` destructor (`_$E216`, `g_NodeStack`'s static
+destructor in PreWorld.obj), the two frame slots of that sum
+(`MakeWorldPVS`, 0x43f428), a register choice (`DoProcessing`,
+`BrushToWorld`, `FixTJunctions`). Never the function's own statements.
+
+**What is counted: the symbols the front end makes**, in units:
+
+| declaration | units |
+|---|---|
+| `#define`, a comment, the length of any name (10, 200, 1000 chars) | 0 |
+| `typedef`, `extern int v;`, `static const int k = 1;`, a new `class X;` | 1 |
+| a forward declaration of a class already declared | 0 |
+| a function declaration, `void f(...)` | 1 + 1 per parameter, **every time**: a redeclaration counts again; parameter names and the return type don't matter |
+| an inline function definition | 2 + 1 per parameter |
+| `enum E { A, B };` | 1 + 1 per enumerator |
+| a class definition, `class C {};` | 8, + 1 per data member, + each member function as above |
+
+Two inline constructors (`C() {}` and `C(const P *p) : m_a(p->x), m_b(p->y) {}`)
+came to 7: 2 + 3, and 1 per member initializer, it seems (not measured on
+its own). Units ADD: the light groups (47, measured alone), CheckNodes (2,
+measured) and four members the table puts at 2 + 2 + 1 + 1 measured 55
+together, and 57 with one more of 2.
+
+**Modulo 64.** Adding 64 typedefs (or 128, or 63 one-unit declarations
+and a typedef) to a header changes nothing anywhere; 32 does. Each
+sensitive function has a fixed set of good residues: `_$E216` is right
+for -11..+3 units, MakeWorldPVS and DoProcessing together for -2..+4, +6,
++31..+36 and +46..+49. Three-unit steps in front of `g_NodeStack` show the
+cycle directly: `_$E216` is right at 0..1 steps, 62..64, 82..86, 104..106
+and 126..128, and wrong in between -- 64/3 steps a cycle.
+
+**Before what.** Only the units made before the point where the inlined
+function is first NEEDED in the translation unit, its first use, which is
+not the function being compiled. Six units in front of `g_NodeStack`
+(PreWorld.cpp line 31) flip `_$E216`; twelve just after it (line 33)
+change nothing. MakeWorldPVS's inlined `~CHullInfo` is first needed
+by BuildWorldHulls, thirty lines earlier: five typedefs anywhere up to
+BuildWorldHulls flip MakeWorldPVS, five after it don't, though
+MakeWorldPVS itself starts lower down. A header change therefore counts in
+every file that includes the header before that first use, and in no
+other: `BrushToWorld.cpp` and `TJunctions.cpp` include PreWorld.h but not
+PreLeaf.h, so the two headers are separate accounts.
+
+(Our guess at the mechanism, not measured: the back end orders or hashes
+by symbol number in a 64-way table, so a template's symbols, numbered when
+it is first instantiated, move against the fixed ones of the classes
+declared earlier.)
+
+**How to weigh a change, cheaply.** Build only the objects that hold
+sensitive functions (four here, 9 s a build), compare each with a
+baseline build by symbol (`tools/objdiff.py`), and record which functions
+differ:
+
+ 1. a reference: 1..64 typedefs at one fixed place in the header (64
+    builds); each n gives a set of flipped functions, its signature;
+ 2. a change's weight mod 64 is the n whose signature its build has. A
+    signature is usually shared by several n, so build the change three
+    times, plus 0, 17 and 40 typedefs, and intersect.
+
+Then pay for it in the same header (an equal and opposite number of units,
+or 64 minus it), so that every file sees the same count mod 64 as before.
+Ways that are legitimate, in order of preference: delete what Build 69
+declares and 2001 cannot have (Jupiter's light groups were 47 units; a
+member function nothing defines or calls is 1 + its parameters); move a
+declaration to the header of the file that defines it, out of the files
+that don't use it; delete a declaration of something that no longer
+exists. Dummies only as a measuring tool.
+
+Worked, Processor.exe: CPrePolyRef as a POD (-7) paid with 57 units of
+Build 69 declarations nothing used; CPreLeaf's 0x6c as a class of its own
+(+21 in PreWorld.cpp and Processing.cpp) paid by moving the portal
+functions to LeafPortals.h and FindObjectLeaf/FindInsideLeaf to
+PreGeometry.h (which PreWorld.cpp includes and Processing.cpp doesn't, so
+the two files each landed in a good window, not on zero). Four
+functions identical, none lost.
+
+**A second, link-level effect, in the scorer.** Identical tiny functions
+(an empty `ret`) are folded by the linker's /OPT:ICF and the map names
+the group under the object whose copy it kept. Which object that is
+changes with any function added to or removed from the link (one
+unreferenced function in Terrain.cpp moved both groups), and the scorer
+pairs functions by `object:symbol`: when it places by shape a copy the
+link dropped, the function cannot be verified and a recorded identical
+(0x42dd40) reads `small`, with no byte of code changed. progress.py now
+tries the copies our map names first.
 
 ## Two rules that do NOT hold everywhere -- check before applying
 
@@ -2407,7 +2503,8 @@ these was a source difference; none was the compiler's whim.
   earlier in the function. Padding reproduces it; the real ones are unknown.
 * **A header symbol-count threshold.** tcpdriver.cpp's `HandleConnPacket` flips
   on ANY added declaration in lthread.h/servermgr.h, used or not. Count
-  declarations when a header change costs it; removing dead ones compensates.
+  declarations when a header change costs it; removing dead ones compensates
+  (how many: "The declaration count is a symbol count, mod 64").
 * **Loop shape from returns inside the loop.** `if (++j >= 8) return 1;` gives
   the shipped `cmp; jae <return>; jmp top` tail; `for (j...)` never rotates.
 * **`*(volatile float*)&x` at one read site** forces the store+reload shipped
