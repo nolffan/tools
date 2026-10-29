@@ -13,7 +13,9 @@ compiler settings and custom build steps. It writes build/build.mk's rules
 for them, through build.mk's `compile` and `tool` macros:
 
   every .c/.cpp   cl (or the compiler in the make variable CL_<project>,
-                  in the environment ENV_<project>; links and libraries
+                  in the environment ENV_<project>, or for one source
+                  CL_<project>__<source's base name>, ENV_<project>__<...>,
+                  where build.mk sets them; links and libraries
                   likewise LINK_<project>, LIBEXE_<project>,
                   where build.mk sets one) <the project's ADD CPP, with the file's own ADD CPP
                   and SUBTRACT CPP applied, less /FD> /Fp"<intdir>\\<project>.pch"
@@ -362,7 +364,9 @@ def main():
                 base = os.path.splitext(ntpath.basename(src))[0]
                 obj = winjoin(wdir, f"{intdir}\\{base}.obj")
                 objs.append(obj)
-                mk.append(f"$(eval $(call compile,{obj},{pdir},{q(src)},$(or $(ENV_{var}),$(ENV_GAME)),$(or $(CL_{var}),$(CL)),"
+                ovar = f"{var}__{re.sub(r'\W', '_', base)}"
+                mk.append(f"$(eval $(call compile,{obj},{pdir},{q(src)},$(or $(ENV_{ovar}),$(ENV_{var}),$(ENV_GAME)),"
+                          f"$(or $(CL_{ovar}),$(CL_{var}),$(CL)),"
                           f"{q(' '.join(cmd))},wine-drives))")
                 if pch:
                     kind = next(f[2] for f in flags if f[:3] in ("/Yc", "/Yu", "/YX")).lower()
