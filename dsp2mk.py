@@ -231,16 +231,38 @@ def parse_dsp(path, want, exact=None):
     return name, ttype, cfgname, cfg, files
 
 
+# Flags Developer Studio writes as two words (/D "X"): one item each.
+TWO_WORD = ("/D", "/I", "/U", "/FI")
+
+
+def flag_items(words):
+    """Words to items, a two-word flag and its argument together."""
+    items, i = [], 0
+    while i < len(words):
+        if words[i] in TWO_WORD and i + 1 < len(words):
+            items.append((words[i], words[i + 1]))
+            i += 2
+        else:
+            items.append((words[i],))
+            i += 1
+    return items
+
+
 def apply_cpp(base, add, sub):
-    """The project's cl flags with a file's ADD CPP and SUBTRACT CPP."""
-    flags = list(base)
-    for f in add:
-        if f[:3] in ("/Yc", "/Yu", "/YX"):
-            flags = [g for g in flags if g[:3] not in ("/Yc", "/Yu", "/YX")]
+    """The project's cl flags with a file's ADD CPP and SUBTRACT CPP. A
+    two-word flag is subtracted as a pair (SUBTRACT CPP /D "X" takes out
+    that /D alone); a one-word flag takes out every flag it begins."""
+    flags = flag_items(base)
+    for f in flag_items(add):
+        if f[0][:3] in ("/Yc", "/Yu", "/YX"):
+            flags = [g for g in flags if g[0][:3] not in ("/Yc", "/Yu", "/YX")]
         flags.append(f)
-    for s in sub:
-        flags = [g for g in flags if not g.startswith(s)]
-    return flags
+    for s in flag_items(sub):
+        if len(s) == 2:
+            flags = [g for g in flags if g != s]
+        else:
+            flags = [g for g in flags if not (len(g) == 1 and g[0].startswith(s[0]))]
+    return [w for g in flags for w in g]
 
 
 def without(flags, prefixes):
