@@ -2,7 +2,8 @@
 """Make rules for Monolith's Visual C++ 6 workspace, as Developer Studio
 would build it.
 
-  tools/dsp2mk.py [--have "<project>..."] <workspace.dsw> <config> <out.mk> <project>...
+  tools/dsp2mk.py [--have "<project>..."] [--macro NAME=VALUE]... [--drive X=DIR]...
+                  <workspace.dsw> <config> <out.mk> <project>...
 
 Reads the workspace and, for each named project and every project it
 depends on (the workspace's Project_Dep_Name lines), its .dsp: the
@@ -39,7 +40,16 @@ the game's and the engine's workspaces share) get no rules here, only
 their outputs, to link.
 
 Paths are as the .dsp spells them, relative to the project's directory; the
-outputs land where its Output_Dir / Intermediate_Dir / /out: say. Every
+outputs land where its Output_Dir / Intermediate_Dir / /out: say. A project
+may name paths through an environment variable, `$(NAME)`, which Developer
+Studio expands from the environment (AvP2's `$(LT2_DIR)\\sdk\\inc`): --macro
+gives each such name its value, substituted as Developer Studio would,
+verbatim, into flags and paths alike (`--macro LT2_DIR=s:\\LT2`). The value
+is an absolute Windows path on a drive the compilers see; --drive says
+which tree directory that drive is (`--drive s=src`), so that a source or a
+library named through it (`$(LT2_DIR)\\lithshared\\libs\\Release\\StdLith.lib`)
+is a path in the tree to make. A `$(NAME)` no --macro names is left as it
+is (Developer Studio's own, such as `$(CFG)`, `$(InputPath)`). Every
 project gets make variables P_<name>_OUT (its output, relative to the tree
 root) and a phony target <name>. Projects the workspace names but the source
 release lacks (ltmem) are skipped with a note on stderr.
@@ -64,6 +74,17 @@ import sys
 YX_FIRST = {"serverdir": "stdafx.obj"}
 
 _spelling = {}
+
+# --macro NAME=VALUE and --drive X=DIR (main)
+MACROS = {}
+DRIVES = {}
+
+
+def expand(text):
+    """`$(NAME)` replaced by its --macro value, for every name given one."""
+    if not MACROS:
+        return text
+    return re.sub(r"\$\((\w+)\)", lambda m: MACROS.get(m.group(1).lower(), m.group(0)), text)
 
 
 def load_spellings(path):
@@ -116,6 +137,12 @@ def winjoin(base, rel, leaf=True):
     spells it (canon; with leaf=False only its directories: a file a build
     step makes keeps the name the step gives it)."""
     p = ntpath.normpath(ntpath.join(base, rel))
+    drive, rest = ntpath.splitdrive(p)
+    if drive:
+        top = DRIVES.get(drive[0].lower())
+        if top is None:
+            sys.exit(f"dsp2mk: {rel}: drive {drive} is no tree directory (--drive)")
+        p = ntpath.normpath(ntpath.join(top.replace("/", "\\"), rest.lstrip("\\")))
     return canon(p.replace("\\", "/"), leaf)
 
 
@@ -148,7 +175,7 @@ def parse_dsp(path, want, exact=None):
     """(project name, type, chosen config name, Config, [SourceFile]). The
     configuration is `exact` if given, else the one named `want`, else
     Release."""
-    text = open(path, encoding="latin-1").read().replace("\r\n", "\n")
+    text = expand(open(path, encoding="latin-1").read().replace("\r\n", "\n"))
     lines = text.split("\n")
     name = re.search(r'Project File - Name="([^"]+)"', text).group(1)
     ttype = re.search(r'# TARGTYPE "[^"]*\) ([^"]+)"', text).group(1)
@@ -286,9 +313,21 @@ def q(w):
 
 def main():
     have = set()
-    if len(sys.argv) > 2 and sys.argv[1] == "--have":
-        have = {re.sub(r"\W", "_", n).lower() for n in sys.argv[2].replace(",", " ").split()}
+    while len(sys.argv) > 2 and sys.argv[1] in ("--have", "--macro", "--drive"):
+        opt, val = sys.argv[1], sys.argv[2]
         del sys.argv[1:3]
+        if opt == "--have":
+            have = {re.sub(r"\W", "_", n).lower() for n in val.replace(",", " ").split()}
+            continue
+        k, sep, v = val.partition("=")
+        if not sep or not k:
+            sys.exit(f"dsp2mk: {opt} {val}: NAME=VALUE")
+        if opt == "--macro":
+            MACROS[k.lower()] = v
+        elif len(k) == 1 and k.isalpha():
+            DRIVES[k.lower()] = v.rstrip("/")
+        else:
+            sys.exit(f"dsp2mk: --drive {val}: a drive letter, X=DIR")
     if len(sys.argv) < 5:
         sys.exit(__doc__)
     dsw, want, out_mk = sys.argv[1], sys.argv[2], sys.argv[3]
