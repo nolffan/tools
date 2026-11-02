@@ -53,6 +53,21 @@ CACHE_VERSION = 2
 # the project's own headers, last on every INCLUDE path (build/build.mk)
 PROJECT_INCLUDE = os.environ.get("MKDEPS_PROJECT_INCLUDE", "src/nolf2src")
 
+# Drives the compilers see, as tree directories: MKDEPS_DRIVES="s=src
+# t=toolchains". An /I directory on one of them (AvP2's project files name
+# the SDK as $(LT2_DIR)\sdk\inc, which dsp2mk.py makes s:\LT2\sdk\inc) is
+# looked for in that directory; without the map such a directory is
+# found nowhere, and the headers in it are no object's dependencies.
+DRIVES = dict(kv.split("=", 1) for kv in os.environ.get("MKDEPS_DRIVES", "").split() if "=" in kv)
+
+
+def on_drive(d):
+    r"""An /I directory `x:\...` as a path in the tree, if x is a mapped
+    drive; any other unchanged."""
+    if len(d) >= 2 and d[1] == ":" and d[0].lower() in DRIVES:
+        return DRIVES[d[0].lower()] + "/" + d[2:].replace("\\", "/").lstrip("/")
+    return d
+
 
 class Resolver:
     def __init__(self, cache):
@@ -149,7 +164,8 @@ def main():
                     dl.append(words[i + 1])
                 elif w.upper().startswith("/I") and len(w) > 2 and w[2] not in "fF":
                     dl.append(w[2:])
-            dl = [r.find(cwd, d, isdir=True) for d in dl]
+            dl = [r.find(cwd, d, isdir=True) if on_drive(d) is d else r.find(".", on_drive(d), isdir=True)
+                  for d in dl]
             isrc = real.lower().endswith(".rc")
             hs = r.deps(real, [d for d in dl if d] + [PROJECT_INCLUDE], rc=os.path.normpath(cwd) if isrc else None)
             if isrc:
