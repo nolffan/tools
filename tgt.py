@@ -46,9 +46,17 @@ def _keys(t):
 
 
 def find_or_none(name):
+    """The target `name` names: its label or stem first, then the file name
+    of its shipped or built image -- so that where two targets' images
+    share a file name (AvP2's CShell.dll and Primal Hunt's, built as
+    CShell.dll too), a label still names its own."""
     if isinstance(name, dict):
         return name
     n = os.path.basename(str(name).rstrip("/\\")).lower()
+    for cand in (n, os.path.splitext(n)[0]):
+        for t in cfg.TARGETS:
+            if cand in (t["label"].lower(), t["stem"].lower()):
+                return t
     for cand in (n, os.path.splitext(n)[0]):
         for t in cfg.TARGETS:
             if cand in _keys(t):
