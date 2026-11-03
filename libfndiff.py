@@ -34,6 +34,16 @@ import fndiff                                       # noqa: E402
 OURS = "src/lithshared/out/{}.lib"
 
 
+def ours_path(label):
+    """Our build of library <label>: where progress/targets.py's LIBS puts
+    it, else nolfsrc's src/lithshared/out/<label>.lib."""
+    import progress
+    for name, path in progress.LIBS:
+        if name.lower() == label.lower():
+            return os.path.join(REPO, path)
+    return os.path.join(REPO, OURS.format(label))
+
+
 def ship_path(label):
     from progress import shipped_lib_dir
     d = shipped_lib_dir()
@@ -64,7 +74,7 @@ def main():
     if "--list" in sys.argv:
         label = args[0]
         with tempfile.TemporaryDirectory() as t1, tempfile.TemporaryDirectory() as t2:
-            _, ours = sym_map(os.path.join(REPO, OURS.format(label)), t1)
+            _, ours = sym_map(ours_path(label), t1)
             _, ship = sym_map(ship_path(label), t2)
         rows = [(len(ours[k]) - len(v), len(v), len(ours[k]), k)
                 for k, v in ship.items() if k in ours and ours[k] != v]
@@ -80,7 +90,7 @@ def main():
         sys.exit(__doc__)
     label, want = args
     with tempfile.TemporaryDirectory() as t1, tempfile.TemporaryDirectory() as t2:
-        ow, oc = sym_map(os.path.join(REPO, OURS.format(label)), t1)
+        ow, oc = sym_map(ours_path(label), t1)
         sw, sc = sym_map(ship_path(label), t2)
         hits = [k for k in sc if want in k and k in ow]
         if len(hits) != 1:
