@@ -1436,6 +1436,20 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         # (an image scored twice, for its remainders: the second run's)
         SMALL_REFUTED[:] = [r for r in SMALL_REFUTED if r[0] != label]
 
+        # An operand of OUR image outside its sections names nothing: a link
+        # made with /FORCE (one of an engine still missing functions) gives
+        # every unresolved symbol the address of the image's base, RVA 0
+        # (VC6's link 6.00.8447: our lithtech.exe's calls to unresolved
+        # functions all reach 0x00400000), so the operand is the base or the
+        # base plus the relocation's addend (a DIR32 to `sym+8`), in the
+        # headers. Taken as an address, every unresolved symbol would be
+        # one and the same thing: an identical function's call to one of
+        # them would map the base to its shipped callee, and then any small
+        # function calling ANY unresolved symbol there would "verify" (or
+        # be refuted by a symbol that is merely missing). Such an operand
+        # is unknown -- never noted in the mapping, never proof.
+        o_secs = [(sva, sva + vs) for sva, vs, _rp in ope.secs.values()]
+
         def operand(which, fa, off, kind):
             if which is pe and s_lo <= fa + off < s_hi - 3:
                 v = struct.unpack_from("<I", text, fa + off - tva)[0]
@@ -1444,12 +1458,16 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             if v is None:
                 return None
             if kind == 0x14:                    # REL32
-                return (fa + off + 4 + v) & 0xFFFFFFFF
-            if kind == 0x06:                    # DIR32
-                return v
-            if kind == 0x07:                    # DIR32NB, an RVA
-                return (v + which.base) & 0xFFFFFFFF
-            return None
+                r = (fa + off + 4 + v) & 0xFFFFFFFF
+            elif kind == 0x06:                  # DIR32
+                r = v
+            elif kind == 0x07:                  # DIR32NB, an RVA
+                r = (v + which.base) & 0xFFFFFFFF
+            else:
+                return None
+            if which is ope and not any(lo <= r < hi for lo, hi in o_secs):
+                return None
+            return r
 
         def blen(n):
             code = funcs[n][0]
@@ -1591,6 +1609,15 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                     if sa in matched or not in_app(tgt, sa):
                         continue
                     if paired.get(sa, n) != n:
+                        continue
+                    # A function with no relocation has nothing for the
+                    # mapping to prove: its bytes matched exactly already,
+                    # at the address the shape placement chose among all of
+                    # its shape (a 1-byte `ret`, a `mov eax,[ecx+8]; ret`).
+                    # Only its own address mapping there -- identical code
+                    # calls it, or a paired vtable holds it -- says it is
+                    # that function and not another of its shape.
+                    if not rel and m.get(oa) != sa:
                         continue
                     if check(n, sa, m, seen_s)[0] != "ok":
                         continue
