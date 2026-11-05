@@ -954,7 +954,9 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                 hi -= 1
             sizes[a] = hi - (a - tva)
 
-    # Second oracle (linked_oracle): our own whole-image link. exematch has
+    # Second oracle (linked_oracle): our own whole-image link (True: the
+    # bytes anywhere in it; "same-address": only at the function's own
+    # address, see below). exematch has
     # to mask relocation bytes because it compares an unlinked .obj, which
     # leaves the global initializer COMDATs -- two unmasked opcodes each --
     # unverifiable. In a linked image those relocations are resolved, so a
@@ -979,6 +981,12 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     starts = [a for a in starts if a not in inside]
 
     if linked is not None:
+        # linked_oracle="same-address": the bytes must be our link's at the
+        # same address, not merely somewhere in it. With the layouts agreeing
+        # there, every rel32 in the function names the same target as the
+        # retail one does; a copy of the bytes elsewhere proves nothing
+        # (the same short body is often several functions).
+        same_addr = tgt.get("linked_oracle") == "same-address"
         for a in starts:
             if a in matched or not in_app(tgt, a):
                 continue
@@ -986,6 +994,12 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             if n < 1:
                 continue
             b = text[a - tva : a - tva + n]
+            if same_addr:
+                o = a - ltva
+                if b and 0 <= o and linked[o:o + n] == b:
+                    matched[a] = n
+                    linked_ours.add(a)
+                continue
             if b and b in linked:
                 matched[a] = n
                 # the function of ours the bytes are: the one at the same
