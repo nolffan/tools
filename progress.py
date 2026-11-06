@@ -1382,7 +1382,13 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                 base = max(sorted(votes), key=lambda b: votes[b])
                 bad = sum(1 for k, sa in slot_ident
                           if dword(pe, base + 4 * k) != sa)
-                if votes[base] >= 2 and votes[base] > bad:
+                # Slots a class inherits unchanged are the same functions in
+                # every sibling's table: when another table gets as many
+                # votes, the slots cannot say which is ours (Primal Hunt's
+                # CProjectile subclasses, once CProjectile's own virtuals
+                # are identical, all vote alike), so nothing is placed.
+                tied = sum(1 for b in votes if votes[b] == votes[base]) > 1
+                if votes[base] >= 2 and votes[base] > bad and not tied:
                     vt.append((a, base, nslots))
         for oa, sa, nslots in vt:
             for k in range(nslots):
