@@ -1573,13 +1573,34 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                     break
         return best, best_ok, end
 
+    near_todo = []
     for n, (code, mask) in sorted(funcs.items()):
         if len(code) - len(mask) < 8 or \
                 (n in from_lib and n not in lib_near_ok):
             continue
         occurs[n] = bool(list(find(text, tva, code, mask))) or bool(
             n in unpadded and list(find(text, tva, *unpadded[n])))
-        if occurs[n]:
+        if not occurs[n]:
+            near_todo.append(n)
+    # A COMDAT (a template's member, an inline) is one function however many
+    # objects carry a copy: the linker keeps one. Each object compiles its
+    # own copy, though, and one object's can come out differently (another
+    # inlining budget), so one copy can occur nowhere while another (the
+    # one our link kept, usually) is identical. Such a copy is not some
+    # other shipped function: pairing it as near only takes the slot of the
+    # function that is there. (Per-object names -- `_$E12`, ??__E/??__F --
+    # and statics, `name@<obj>.obj`, are distinct functions: they keep
+    # their own.)
+    def _shared(n):
+        sym = n.split(":", 1)[-1]
+        return None if re.match(r"_?\$E|\?\?__[EF]", sym) or \
+            re.search(r"@[^@]+\.obj$", sym) else sym
+    found_syms = {_shared(n) for n, o in occurs.items() if o} - {None}
+    # The copies our link kept pair first: an address is the function our
+    # image has, before it is a discarded copy's.
+    for n in sorted(near_todo, key=lambda n: (not _linked(n), n)):
+        code, mask = funcs[n]
+        if _shared(n) in found_syms:
             continue
         best, best_ok, end = near_best(n, code, mask)
         if best is not None and best_ok:
