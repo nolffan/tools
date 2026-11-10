@@ -2048,7 +2048,18 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                     # that function and not another of its shape.
                     if not rel and m.get(oa) != sa:
                         continue
-                    if check(n, sa, m, seen_s)[0] != "ok":
+                    # Its own address mapping there is that proof for a
+                    # function with relocations too: identical code calls
+                    # (or jumps to) it at sa, and its shape fits sa. Then an
+                    # operand nothing has paired yet (`unmapped`) does not
+                    # stand in the way -- only one that maps elsewhere
+                    # (`refuted`) does. (The <string> guard pairs: the
+                    # identical 25-byte initializer jumps to its 12-byte
+                    # atexit registration, whose pushed destructor is paired
+                    # by nothing else.)
+                    st = check(n, sa, m, seen_s)[0]
+                    if st != "ok" and not (st == "unmapped" and
+                                           m.get(oa) == sa):
                         continue
                     # proven: identical at sa
                     s0 = small_at.pop(n, None)
@@ -2361,8 +2372,12 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
 
         # 3. Across the image: what is left, between neighbouring anchors of
         # any object in our whole link.
+        # (anchors as in 2: not the per-object initializer names, which are
+        # placed by shape -- <string>'s guard pair recurs in every object
+        # that includes it and takes whichever free one fits)
         ch = [(-1, lo)] + chain_of((ours_at[n], a) for n, a in placed_at.items()
-                                   if n in ours_at) + [(1 << 40, hi)]
+                                   if n in ours_at and not co_sym(n)) + \
+            [(1 << 40, hi)]
         mine = mine_now()
         for (o1, r1), (o2, r2) in zip(ch, ch[1:]):
             align_gap(mine, o1, r1, o2, r2, "image")
