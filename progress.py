@@ -1818,7 +1818,10 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             # (not a template instance or deleting destructor: emitted by
             # every object that uses it, its look-alikes are anywhere, and
             # the position join below places it better)
-            if old in placed_at or not _obj_local(old):
+            # (and only one our own link puts in our image: a function our
+            # link leaves out has no address of ours, and pairing it would
+            # place code that isn't in the image)
+            if old in placed_at or not _obj_local(old) or old not in ours_at:
                 continue
             best, best_ok, end = near_best(old, *funcs[old],
                                            taken=taken_now)
