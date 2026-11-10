@@ -1202,6 +1202,7 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     for n, hits in all_hits.items():
         if n not in from_lib and len(hits) == 1 and _obj_local(n):
             obj_anchors.setdefault(_lib_of(n), []).append(hits[0])
+    displaced = []
     for n, (code, mask) in sorted(funcs.items()):
         if n in placed:
             continue
@@ -1228,8 +1229,35 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         if anc and len(fresh) > 1:
             fresh.sort(key=lambda h: min(abs(h - a) for a in anc))
         at = (fresh or hits)[0]
+        prev = PLACED_SYMS.get((label, at))
+        if prev is not None and prev != n:
+            displaced.append(prev)
         matched[at] = len(code)
         PLACED_SYMS[(label, at)] = n
+    # A function with no free hit takes its first hit even where an earlier
+    # one (in name order) was placed, and that one was dropped without a
+    # trace: a masked shape that fits two addresses (GetAddress's `mov eax,
+    # <string>` beside GetPing's `mov eax, 9999`, the rest the same) took
+    # the one only its sibling fits, and lost it. The displaced function
+    # takes its next free hit, chosen as above.
+    for n in displaced:
+        code, mask = funcs[n]
+        fresh = [h for h in all_hits.get(n, []) if h not in matched]
+        if len(fresh) > 1:
+            at_start = [h for h in fresh if h in start_set]
+            if at_start:
+                fresh = at_start
+        if n in from_lib:
+            anc = anchors.get(_lib_of(n))
+        else:
+            anc = obj_anchors.get(_lib_of(n)) if _obj_local(n) else None
+        if anc and len(fresh) > 1:
+            fresh.sort(key=lambda h: min(abs(h - a) for a in anc))
+        if fresh:
+            if n in unpadded and not list(find(text, tva, code, mask)):
+                code, mask = unpadded[n]
+            matched[fresh[0]] = len(code)
+            PLACED_SYMS[(label, fresh[0])] = n
 
     # Matches may not overlap. find() admits a hit at any offset, so a short
     # body's masked shape can recur inside a longer function another of ours
@@ -1479,14 +1507,12 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                        _lib_of(n) in lib_block and
                        re.sub(r"@[^@]+\.obj$", "", n.split(":", 1)[1])
                        in layout_syms}
-    for n, (code, mask) in sorted(funcs.items()):
-        if len(code) - len(mask) < 8 or \
-                (n in from_lib and n not in lib_near_ok):
-            continue
-        occurs[n] = bool(list(find(text, tva, code, mask))) or bool(
-            n in unpadded and list(find(text, tva, *unpadded[n])))
-        if occurs[n]:
-            continue
+
+    def near_best(n, code, mask, taken=()):
+        """The shipped start a function of ours whose bytes occur nowhere
+        pairs with as near, by content (see below): (address or None,
+        whether the pairing holds, our length without padding)."""
+        nonlocal rejected
         end = len(code)
         while end > 0 and code[end - 1] in (0x90, 0xCC):
             end -= 1
@@ -1501,7 +1527,8 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             cand = [a0] + [a for a in starts if a != a0]
         blk = lib_block.get(_lib_of(n)) if n in from_lib else None
         for a in cand:
-            if a in matched or a in paired or not in_app(tgt, a):
+            if a in matched or a in paired or a in taken or \
+                    not in_app(tgt, a):
                 continue
             if blk and not blk[0] <= a < blk[1]:
                 continue
@@ -1544,6 +1571,17 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                 if ok0 and (o0 is None or o0 == t0):
                     best, best_rank, best_ok = a, rank, True
                     break
+        return best, best_ok, end
+
+    for n, (code, mask) in sorted(funcs.items()):
+        if len(code) - len(mask) < 8 or \
+                (n in from_lib and n not in lib_near_ok):
+            continue
+        occurs[n] = bool(list(find(text, tva, code, mask))) or bool(
+            n in unpadded and list(find(text, tva, *unpadded[n])))
+        if occurs[n]:
+            continue
+        best, best_ok, end = near_best(n, code, mask)
         if best is not None and best_ok:
             paired[best] = n
             NEAR_PAIRS.append((label, best, sizes.get(best, 0), n, end))
@@ -1746,6 +1784,7 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                         not (tva <= sv < tva + tvs):
                     break
                 evidence(ov, sv)
+        displaced_near = []
         for sa, n in sorted(claimed_by.items()):
             if n in placed_at and placed_at[n] == sa:
                 continue
@@ -1755,6 +1794,7 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             if old is not None:
                 del paired[sa]
                 placed_at.pop(old, None)
+                displaced_near.append(old)
             if n in placed_at:
                 b = placed_at.pop(n)
                 if paired.get(b) == n:
@@ -1766,6 +1806,27 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             NEAR_PAIRS.append((label, sa, sizes.get(sa, 0), n,
                                len(bytes(funcs[n][0]).rstrip(b"\x90\xcc"))))
             by_ref += 1
+        # A content pairing a reference displaced was the best of equals as
+        # often as not: a function whose shape recurs (CMarineWepChooser's
+        # NextWeapon and PrevWeapon differ only in the table they index, a
+        # masked operand) took the first look-alike, and the reference
+        # gives that one to its own function. The displaced function pairs
+        # again, by content, among the addresses nothing is placed at yet
+        # (by content, by position or by reference).
+        taken_now = set(placed_at.values())
+        for old in displaced_near:
+            # (not a template instance or deleting destructor: emitted by
+            # every object that uses it, its look-alikes are anywhere, and
+            # the position join below places it better)
+            if old in placed_at or not _obj_local(old):
+                continue
+            best, best_ok, end = near_best(old, *funcs[old],
+                                           taken=taken_now)
+            if best is not None and best_ok:
+                taken_now.add(best)
+                paired[best] = old
+                placed_at[old] = best
+                NEAR_PAIRS.append((label, best, sizes.get(best, 0), old, end))
         our_placed = {ours_at[n] for n in placed_at if n in ours_at} | \
             linked_ours
         if by_ref:
