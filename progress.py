@@ -20,6 +20,17 @@ the functions (name + byte size) and classifies our build of each as:
   unplaced   (ours, not theirs) a function of ours that our own link puts in
              our image, but that no shipped function is placed for, even by
              position (the join in _rows_for_image): WRITTEN BUT UNPLACED
+  unreferenced (ours) a function our own link puts in our image, that no
+             shipped function is placed for, and that the retail link's
+             /OPT:REF would have discarded: nothing it keeps references it
+             (_referenced). Our scoreboard links are /OPT:NOREF, so they
+             keep every COMDAT; a template member an explicit instantiation
+             emits and nothing calls is no evidence of anything missing.
+             Only a COMDAT the compiler emits wherever it is used (an
+             inline, a template member, a compiler-generated helper) can
+             be: an out-of-line definition is presumed kept, as its caller
+             may be shipped code we have not written. A target's
+             `no_reach` turns this off (all such stay `unplaced`)
   unlinked   (ours) a function our own link leaves out of our image too:
              compiled, but not part of this binary
   driver     (ours) a function only a scoring driver (DRIVER_OBJS) emits
@@ -41,7 +52,8 @@ Coverage is the pair of counts summary.json carries per target: UNWRITTEN
 and UNPLACED. Both at zero means every shipped function has a written,
 placed counterpart -- near or identical -- and nothing of ours is left
 over; tools/ratchet.py keeps either from going up (and `check --covered`
-requires both at zero). unplaced, unlinked and driver rows are ours, not
+requires both at zero). unplaced, unreferenced, unlinked and driver rows
+are ours, not
 shipped functions: none of them is in the denominator.
 
 Ground truth is always the SHIPPED binary, so the denominator can't drift:
@@ -65,7 +77,8 @@ tools/ratchet.py compares those with the recorded baseline in progress/.
 
 Usage:
   progress.py [--nears[=target]]
-              [--todo|--attempted|--near|--small|--unplaced|--unlinked|--driver[=target]]
+              [--todo|--attempted|--near|--small|--unplaced|--unreferenced|
+               --unlinked|--driver[=target]]
               [--refuted[=target]]
 
 --nears prints the near-match worklist instead of the summary: one line per
@@ -582,7 +595,7 @@ def _own_addr(tgt, n, funcs=None):
     return a
 
 
-def _load_objs(objs, icl=False):
+def _load_objs(objs, icl=False, graphs=None):
     """Our functions: {module:symbol: (code, mask)}, the ones from a library
     scored on its own (LIBS), and, for icl, each padded function's bare body.
 
@@ -590,11 +603,16 @@ def _load_objs(objs, icl=False):
     per object, so `_$E192` exists in more than one of ours and a bare-symbol
     dict silently drops all but the last -- which loses whole initializer
     groups from the count. A library member's module is `lib(member)`, as
-    the map names it."""
+    the map names it. `graphs`, a dict, is filled with each module's
+    reference graph (_coff_refs), for _referenced."""
     funcs, unpadded, from_lib, kinds = {}, {}, set(), {}
     scored_libs = {l.lower() for l, _p in LIBS}
 
     def add(mod, data, lib_scored):
+        if graphs is not None:
+            g = _coff_refs(data)
+            if g:
+                graphs[mod] = g
         rk = {}
         for k, v in parse_obj_masked(data, rk).items():
             # instantiation drivers exist only to make VC6 emit template
@@ -641,6 +659,335 @@ def _load_objs(objs, icl=False):
         else:
             add(os.path.basename(o), open(q, "rb").read(), False)
     return funcs, unpadded, from_lib, kinds
+
+
+# ---------------------------------------------------------------------------
+# What retail's /OPT:REF would have kept of ours (UNREFERENCED)
+
+def _coff_refs(data):
+    """One object's reference graph, as the linker's /OPT:REF walks it, or
+    None for anything but an i386 COFF object: a dict with
+      secs    {section: (flags, associative parent or 0)}
+      refs    {section: {target}}, a target being another section of this
+              object (an int: a static, a section symbol, a label) or an
+              external name (a str: resolved by name across the link)
+      defs    {external name: section}
+      funcs   {function symbol: section} (as parse_obj_masked keys them)
+      weak    {weak external: its default}
+      drectve the linker directives the object carries (str)
+    """
+    if len(data) < 20:
+        return None
+    machine, nsec, _ts, symoff, nsyms, optsz, _ch = struct.unpack_from(
+        "<HHIIIHH", data, 0)
+    if machine != 0x14C:
+        return None
+    strtab = data[symoff + nsyms * 18:]
+
+    def symname(raw):
+        if raw[:4] == b"\0\0\0\0":
+            off = struct.unpack_from("<I", raw, 4)[0]
+            return strtab[off:strtab.find(b"\0", off)].decode("latin-1")
+        return raw.rstrip(b"\0").decode("latin-1")
+
+    hdrs = []
+    for i in range(nsec):
+        s = 20 + optsz + i * 40
+        _vs, _va, rawsz, rawp, relp, _lnp, nrel, _nln = struct.unpack_from(
+            "<IIIIIIHH", data, s + 8)
+        flags = struct.unpack_from("<I", data, s + 36)[0]
+        hdrs.append((data[s:s + 8].rstrip(b"\0"), rawsz, rawp, relp, nrel,
+                     flags))
+    ents = [None] * nsyms
+    assoc, defs, funcs, weak, sel_of = {}, {}, {}, {}, {}
+    i = 0
+    while i < nsyms:
+        e = symoff + i * 18
+        raw = data[e:e + 18]
+        name = symname(raw[:8])
+        value, secnum, typ, storage, naux = struct.unpack_from(
+            "<IhHBB", raw, 8)
+        ents[i] = (name, secnum, storage)
+        if storage == 3 and value == 0 and naux and 0 < secnum <= nsec and \
+                hdrs[secnum - 1][5] & 0x1000:
+            # a COMDAT's section symbol: its aux record's selection, and
+            # for IMAGE_COMDAT_SELECT_ASSOCIATIVE the section it goes with
+            num, sel = struct.unpack_from("<HB", data, e + 18 + 12)
+            if secnum not in sel_of:
+                sel_of[secnum] = sel
+                if sel == 5:
+                    assoc[secnum] = num
+        if storage == 2 and secnum > 0:
+            defs.setdefault(name, secnum)
+        if storage in (2, 3) and typ == 0x20 and secnum > 0:
+            funcs[name] = secnum
+        if storage == 105 and naux:            # IMAGE_SYM_CLASS_WEAK_EXTERNAL
+            weak[name] = struct.unpack_from("<I", data, e + 18)[0]
+        i += 1 + naux
+    weak = {n: ents[t][0] for n, t in weak.items() if t < nsyms and ents[t]}
+    secs, refs, drectve = {}, {}, ""
+    for si, (sname, rawsz, rawp, relp, nrel, flags) in enumerate(hdrs, 1):
+        secs[si] = (flags, assoc.get(si, 0))
+        if sname == b".drectve" and rawp:
+            drectve += data[rawp:rawp + rawsz].decode("latin-1") + " "
+        out = set()
+        for r in range(nrel):
+            idx = struct.unpack_from("<I", data, relp + r * 10 + 4)[0]
+            ent = ents[idx] if idx < nsyms else None
+            if not ent:
+                continue
+            name, secnum, storage = ent
+            if storage in (2, 105):            # external: by name
+                out.add(name)
+            elif secnum > 0:                   # static, section, label
+                out.add(secnum)
+        refs[si] = out
+    return {"secs": secs, "sel": sel_of, "refs": refs, "defs": defs, "funcs": funcs,
+            "weak": weak, "drectve": drectve}
+
+
+def _link_args(image):
+    """The arguments of our link of `image`: its response file, with any
+    @file it names (relative to the link's directory) read in place, and
+    the link's directory. ([], None) without a response file."""
+    rsp = os.path.join(REPO, image + ".rsp")
+    if not os.path.exists(rsp):
+        return [], None
+    cwd = os.path.dirname(image)
+    cmd = os.path.join(REPO, image + ".cmd")
+    if os.path.exists(cmd):
+        m = re.match(r"\s*cd\s+(\S+)\s*&&", open(cmd).read())
+        if m:
+            cwd = m.group(1)
+
+    def read(path, depth):
+        out = []
+        for line in open(path, errors="replace"):
+            for a in line.split():
+                a = a.strip('"')
+                if a.startswith("@") and depth < 4:
+                    p = ci_path(os.path.join(cwd, a[1:]).replace("\\", "/"))
+                    if p:
+                        out += read(os.path.join(REPO, p), depth + 1)
+                else:
+                    out.append(a)
+        return out
+    return read(rsp, 0), cwd
+
+
+def _def_exports(path):
+    """The names a module-definition file's EXPORTS section exports (the
+    internal name of `ext=int`)."""
+    out, on = [], False
+    for line in open(path, errors="replace"):
+        line = line.split(";", 1)[0].strip()
+        if not line:
+            continue
+        w = line.split()
+        if w[0].upper() in ("EXPORTS",):
+            on = True
+            w = w[1:]
+            if not w:
+                continue
+        elif w[0].upper() in ("LIBRARY", "NAME", "DESCRIPTION", "SECTIONS",
+                              "HEAPSIZE", "STACKSIZE", "VERSION", "IMPORTS"):
+            on = False
+            continue
+        if on:
+            out.append(w[0].split("=")[-1])
+    return out
+
+
+def _mangled_ident(n):
+    """A symbol's own name, without what scopes or types it: `?Insert` of
+    `?Insert@?$CMoArray@...@@QAEIK...@Z`, `??0` and the class of a
+    constructor, `_sub_1001e8d0` of a C name (its `@N` dropped)."""
+    if n.startswith("?"):
+        return n.split("@", 1)[0]
+    return re.sub(r"@\d+$", "", n)
+
+
+# The names the C runtime's startup calls: an image's entry point is the
+# runtime's, which calls one of these of ours.
+_CRT_ENTRIES = ("_WinMain@16", "_wWinMain@16", "_main", "_wmain",
+                "_DllMain@12")
+
+
+def _referenced(tgt, graphs, mapfile, roots):
+    """The functions of ours (`module:symbol`, as _load_objs keys them) our
+    link would keep under /OPT:REF, or None when that cannot be told (no
+    map, no response file, a target's `no_reach`).
+
+    Our scoreboard links are /OPT:NOREF (build/build.mk says why), so a
+    COMDAT nothing references stays in our image; the retail links were
+    /OPT:REF, which discards it. So this walks the references the way that
+    linker does: from every section that is not a COMDAT (a section the
+    linker never discards: an object's data, its initializer tables, a
+    non-/Gy text section), the entry the runtime calls, the image's exports
+    (/EXPORT, a .def file, -export: directives) and /INCLUDE:s, through
+    every relocation, by name -- so a reference our link leaves unresolved
+    ends that chain alone -- an associative COMDAT going with its section.
+    Every COMDAT the compiler made of an out-of-line definition (selection
+    IMAGE_COMDAT_SELECT_NODUPLICATES) is a root as well: the source has it
+    on purpose, and what calls it may be shipped code we have not written
+    (a renderer's functions decoded one by one, their callers still
+    unresolved), so only what the compiler emits wherever it is used --
+    inlines, template members (an explicit instantiation's whole class),
+    vector-deleting destructors, selection ANY -- is ever discarded.
+    `roots` (the functions placed in the shipped image) are live too: the
+    retail linker kept them, so whatever they reference was kept as well,
+    whether or not anything of ours calls them yet. A scoring driver
+    (DRIVER_OBJS) and an instantiation driver (`ForceInstantiation`) are
+    ours, not retail's: they keep nothing.
+
+    Discardable sections (.debug$*) and the linker's own (.drectve) are not
+    code and reference nothing that is kept. A library member counts when
+    our map has anything of it: what it defines was pulled into the link.
+    Deterministic: sets of names and sections, no order.
+    """
+    if tgt.get("no_reach") or not mapfile or \
+            not os.path.exists(os.path.join(REPO, mapfile)):
+        return None
+    image = built_image(tgt)
+    args, cwd = _link_args(image) if image else ([], None)
+    if cwd is None:
+        return None
+    mods = set()
+    for line in open(os.path.join(REPO, mapfile), errors="replace"):
+        p = line.split()
+        if len(p) >= 4 and re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{8}",
+                                        p[0]):
+            lib, _, mem = p[-1].rpartition(":")
+            mods.add(_module(lib, mem).lower())
+    linked = {m: g for m, g in graphs.items()
+              if "(" not in m or m.lower() in mods}
+
+    defs, alt, names = {}, {}, set(_CRT_ENTRIES)
+
+    def directives(words):
+        for a in words:
+            a = a.strip('"')
+            k, _, v = a.partition(":")
+            k = k.lower().lstrip("/-")
+            if k == "alternatename" and "=" in v:
+                f, t = v.split("=", 1)
+                alt.setdefault(f, t)
+            elif k == "export" and v:
+                v = v.split(",")[0].split("=")[-1]
+                names.update((v, "_" + v))
+            elif k == "include" and v:
+                names.add(v)
+            elif k == "entry" and v:
+                names.update((v, "_" + v))
+            elif k == "def" and v:
+                p = ci_path(os.path.join(cwd, v).replace("\\", "/"))
+                if p:
+                    for x in _def_exports(os.path.join(REPO, p)):
+                        names.update((x, "_" + x))
+    directives(args)
+    weak = {}
+    for m, g in linked.items():
+        directives(g["drectve"].split())
+        for n, s in g["defs"].items():
+            defs.setdefault(n, []).append((m, s))
+        for n, t in g["weak"].items():
+            weak.setdefault(n, t)
+    # a .def's undecorated name exports the __stdcall/__fastcall one too
+    stdcall = {}
+    for n in defs:
+        b = re.match(r"([_@]?[^@]+)@\d+$", n)
+        if b:
+            stdcall.setdefault(b.group(1), []).append(n)
+    for n in list(names):
+        names.update(stdcall.get(n, ()))
+
+    children = {}
+    for m, g in linked.items():
+        for s, (_f, parent) in g["secs"].items():
+            if parent:
+                children.setdefault((m, parent), []).append((m, s))
+    nofunc = {}
+    for m, g in linked.items():
+        for n, s in g["funcs"].items():
+            nofunc.setdefault((m, s), []).append(n)
+
+    def dead_end(m, s):
+        return m.lower() in DRIVER_OBJS or (
+            (m, s) in nofunc and
+            all("ForceInstantiation" in n for n in nofunc[(m, s)]))
+
+    live, todo = set(), []
+
+    def mark(node):
+        if node not in live:
+            live.add(node)
+            todo.append(node)
+
+    unresolved = set()
+
+    def mark_name(n, depth=0):
+        if n in defs:
+            for node in defs[n]:
+                mark(node)
+        elif depth < 8 and n in alt:
+            mark_name(alt[n], depth + 1)
+        elif depth < 8 and n in weak:
+            mark_name(weak[n], depth + 1)
+        else:
+            unresolved.add(n)
+
+    # A reference our link leaves unresolved may be to one of ours under
+    # another spelling (a caller's declaration of `sub_XXXXXXXX` in one
+    # class, its definition as a template's member in another: the alias
+    # our link does not take -- d3d.ren's 0x1001c7e0, identical, reached
+    # only so). When exactly one name of ours has that function's own
+    # name -- the mangled name's first part, `?Name` without its scope,
+    # parameters and calling convention -- that one stays: the reference
+    # can only be to it. A name several of ours share (`?SetSize`, every
+    # array's) names none of them in particular, and keeps none.
+    by_ident = {}
+    for n in defs:
+        by_ident.setdefault(_mangled_ident(n), []).append(n)
+    by_ident = {i: ns for i, ns in by_ident.items() if len(ns) == 1}
+
+    for m, g in linked.items():
+        for s, (flags, _p) in g["secs"].items():
+            # not a COMDAT, not LNK_INFO/LNK_REMOVE, not discardable; or a
+            # COMDAT the compiler makes only of a definition the source
+            # has out of line (IMAGE_COMDAT_SELECT_NODUPLICATES)
+            if flags & 0x02000A00 or dead_end(m, s):
+                continue
+            if not flags & 0x1000 or g["sel"].get(s) == 1:
+                mark((m, s))
+    for n in names:
+        mark_name(n)
+    for k in roots:
+        m, _, sym = k.partition(":")
+        s = linked.get(m, {}).get("funcs", {}).get(sym)
+        if s:
+            mark((m, s))
+    seen_idents = set()
+    while todo:
+        while todo:
+            m, s = todo.pop()
+            g = linked[m]
+            if g["secs"][s][0] & 0x02000A00:
+                continue
+            for c in children.get((m, s), ()):
+                mark(c)
+            if dead_end(m, s):
+                continue
+            for t in g["refs"].get(s, ()):
+                if isinstance(t, int):
+                    if t in g["secs"]:
+                        mark((m, t))
+                else:
+                    mark_name(t)
+        for i in sorted({_mangled_ident(n) for n in unresolved} - seen_idents):
+            seen_idents.add(i)
+            for n in by_ident.get(i, ()):
+                mark_name(n)
+    return {"%s:%s" % (m, n) for (m, s) in live for n in nofunc.get((m, s), ())}
 
 
 def _restore_iat_calls(tgt, text, tva):
@@ -754,7 +1101,8 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     text = _restore_iat_calls(tgt, pe.d[trp : trp + tvs], tva)
     img, starts, sizes = _enum_with_sizes(p, label)
 
-    funcs, unpadded, from_lib, rkinds = _load_objs(objs, icl)
+    graphs = {}
+    funcs, unpadded, from_lib, rkinds = _load_objs(objs, icl, graphs)
 
     # A scoring driver (DRIVER_OBJS) exists in no shipped image: the inline
     # and template functions it makes the compiler emit are real candidates,
@@ -1974,6 +2322,22 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     claimed = set(paired.values())
     unplaced_named = set()
 
+    # UNREFERENCED: an unplaced function of ours that the retail link's
+    # /OPT:REF would have discarded (_referenced): nothing that link keeps
+    # references it, so no shipped counterpart is to be expected and its
+    # being placed nowhere is no evidence of anything. Only an unplaced one
+    # is reclassified; whatever is placed (or folded onto, or a copy of,
+    # something placed) is a root of the walk, so never unreferenced.
+    reach = _referenced(tgt, graphs, mapfile,
+                        set(placed_at) | claimed | set(placed_small) |
+                        {n for n in funcs if fname(n) in placed_names}) \
+        if ours_at else None
+
+    def unreferenced(n):
+        return reach is not None and n not in reach
+
+    unreferenced_named = set()
+
     # The short functions (fewer than 8 unmasked bytes: `mov eax,8 / ret`,
     # an initializer thunk that is one jmp) cannot be told apart: a dozen
     # GetType()s return the same constant, so which shipped copy is whose is
@@ -1992,8 +2356,11 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         for n, (code, mask) in funcs.items():
             # a scoring driver's own short functions are not shipped code:
             # counted here they would inflate the surplus of their shape
+            # an unreferenced one (above) is no more shipped than a
+            # driver's: it is not in the surplus either
             if len(code) - len(mask) >= 8 or n in from_lib or \
-                    n not in ours_at or fname(n) in seen or is_driver(n):
+                    n not in ours_at or fname(n) in seen or is_driver(n) or \
+                    (unreferenced(n) and unplaced_sym(n)):
                 continue
             seen.add(fname(n))
             mine_by_shape.setdefault(shape(code, mask), []).append(n)
@@ -2026,6 +2393,12 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     for n, (code, mask) in sorted(funcs.items()):
         if is_driver(n) and n not in claimed and n not in placed_at:
             rows.append((label, n, len(code), "driver"))
+            continue
+        if ours_at and n not in from_lib and unplaced_sym(n) and \
+                unreferenced(n):
+            if fname(n) not in unreferenced_named:
+                unreferenced_named.add(fname(n))
+                rows.append((label, n, len(code), "unreferenced"))
             continue
         if ours_at and len(code) - len(mask) < 8 and n not in from_lib \
                 and unplaced_sym(n):
@@ -2415,7 +2788,7 @@ def main():
     want_cls = None
     for a in sys.argv[1:]:
         for cls in ("todo", "attempted", "near", "small", "unplaced",
-                    "unlinked", "driver"):
+                    "unreferenced", "unlinked", "driver"):
             if a == "--" + cls or a.startswith("--" + cls + "="):
                 want_cls = cls
     if want_cls:
@@ -2478,6 +2851,7 @@ def main():
                 "middleware": 0, "middleware_bytes": 0,
                 "encrypted": 0, "encrypted_bytes": 0,
                 "unplaced": 0, "unplaced_bytes": 0,
+                "unreferenced": 0, "unreferenced_bytes": 0,
                 "unlinked": 0, "unlinked_bytes": 0,
                 "driver": 0, "driver_bytes": 0,
                 "unwritten": 0, "unwritten_bytes": 0,
@@ -2490,7 +2864,8 @@ def main():
         if status in ("crt", "middleware", "encrypted"):  # not Monolith's,
             t[status + "_bytes"] += size                   # or not readable:
             continue                                       # visible, not a target
-        if status in ("unplaced", "unlinked", "driver"):  # ours, no shipped
+        if status in ("unplaced", "unreferenced", "unlinked",  # ours, no
+                      "driver"):                # shipped
             t[status + "_bytes"] += size        # address: not a shipped
             continue                            # function, not a denominator
         if status in ("todo", "attempted"):     # nothing of ours placed there
