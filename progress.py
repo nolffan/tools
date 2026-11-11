@@ -1187,9 +1187,11 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
     # more than a calling convention around its call, and recurs; a longer
     # look-alike is a template instance or a view's member, whose copies
     # are another question)
+    def stub(n):
+        return len(funcs[n][0].rstrip(b"\x90\xcc")) - len(funcs[n][1]) < 16
+
     ambiguous = {n for n in at if n not in placed and relocs(n) and
-                 len(all_hits.get(n, ())) > 1 and
-                 len(funcs[n][0].rstrip(b"\x90\xcc")) - len(funcs[n][1]) < 16}
+                 len(all_hits.get(n, ())) > 1 and stub(n)}
     if not ambiguous:
         return
     o_imp, s_imp = {}, {}
@@ -1293,7 +1295,7 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
             elif any(b < h + size and h < b + s for b, s in matched.items()
                      if b != own):
                 continue
-            key = (hs != "ok", abs(h - first[n]))
+            key = (hs != "ok", abs(h - first.get(n, h)))
             if best is None or key < best[0]:
                 best = (key, h)
         return None if best is None else best[1]
@@ -1311,6 +1313,17 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
         PLACED_SYMS[(label, h)] = n
         holder[h], at[n] = n, h
 
+    # A stub the shape placement left with no address at all (every one of
+    # its look-alikes taken first, by name order) is not refuted, only
+    # crowded out: an address the moves free is its own if every operand
+    # maps there. findobj.obj's FindObjectServer (`push id; call
+    # sm_FindObject`) lost lithtech.exe 0x0042a2b0 to GetStringData, and
+    # when GetStringData was refuted off it the address stayed empty.
+    taken = {n for (lb, _a), n in PLACED_SYMS.items() if lb == label}
+    waiting = sorted(n for n in ours_at if n not in at and n not in placed
+                     and n not in taken and relocs(n) and
+                     len(all_hits.get(n, ())) > 1 and stub(n))
+    late = []
     stuck = set()
     for _round in range(16):
         m, seen_s = mapping([n for n in at if n in good or (
@@ -1350,11 +1363,25 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
             homeless.remove(n)
             put(n, h)
             moved = True
+        for n in list(waiting):
+            # (a free hit only, where every operand maps: it displaces
+            # nothing, and its shape alone proved nothing)
+            h = pick(n, m, seen_s, -1)
+            if h is None or h in holder or h in matched:
+                continue
+            waiting.remove(n)
+            ambiguous.add(n)
+            good.add(n)
+            late.append(n)
+            put(n, h)
+            moved = True
         if not moved:
             break
     for n in sorted(first):
         if at.get(n) != first[n]:
             SHAPE_MOVED.append((label, n, first[n], at.get(n)))
+    for n in late:
+        SHAPE_MOVED.append((label, n, None, at.get(n)))
     rows = [r for r in SHAPE_MOVED if r[0] == label]
     if rows:
         print(f"  {label}: shape placements their operands refuted: "
@@ -1363,7 +1390,7 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
               file=sys.stderr)
         if os.environ.get("PROGRESS_SHAPE_LOG"):
             for r in rows:
-                print(f"    {r[1]} {r[2]:#x} -> "
+                print(f"    {r[1]} {'-' if r[2] is None else hex(r[2])} -> "
                       f"{'-' if r[3] is None else hex(r[3])}", file=sys.stderr)
 
 
