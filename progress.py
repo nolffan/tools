@@ -914,7 +914,10 @@ def _referenced(tgt, graphs, mapfile, roots):
     def dead_end(m, s):
         return m.lower() in DRIVER_OBJS or (
             (m, s) in nofunc and
-            all("ForceInstantiation" in n for n in nofunc[(m, s)]))
+            all("ForceInstantiation" in n or
+                (tgt.get("discarded") and
+                 re.search(tgt["discarded"], "%s:%s" % (m, n)))
+                for n in nofunc[(m, s)]))
 
     live, todo = set(), []
 
@@ -1128,6 +1131,22 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         for n in sorted(funcs):
             if n not in from_lib and re.search(tgt["unreadable"], n):
                 unreadable[n] = len(funcs.pop(n)[0])
+                unpadded.pop(n, None)
+
+    # A target's `discarded` (a regex on `module:symbol`) names out-of-line
+    # definitions of ours that the shipped object had too but the shipped
+    # link's /OPT:REF removed, nothing calling them (proven per entry in
+    # progress/targets.py: what the shipped image keeps of that object
+    # shows the function was compiled into it). The reference walk roots
+    # every out-of-line definition, as its callers may be shipped code not
+    # yet written; for these the image says there are none. Set aside
+    # before any placement, so they pair with nothing, and they keep
+    # nothing in the walk (_referenced): listed below as `unreferenced`.
+    discarded = {}
+    if tgt.get("discarded"):
+        for n in sorted(funcs):
+            if n not in from_lib and re.search(tgt["discarded"], n):
+                discarded[n] = len(funcs.pop(n)[0])
                 unpadded.pop(n, None)
 
     # Several of our functions compile to identical code, and the shipped
@@ -1634,7 +1653,7 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             a = layout.get((mod.lower(), sym))
             if a is not None:
                 ours_at[n] = a
-        for n in unreadable:
+        for n in list(unreadable) + list(discarded):
             mod, sym = n.split(":", 1)
             if (mod.lower(), sym) in layout:
                 ours_at[n] = layout[(mod.lower(), sym)]
@@ -1713,7 +1732,8 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                 return
             if sa in matched or sa in small:
                 return
-            names = [n for n in at_ours.get(oa, ()) if n not in from_lib]
+            names = [n for n in at_ours.get(oa, ())
+                     if n not in from_lib and n not in discarded]
             if not names:
                 return
             if any(n in placed_at and placed_at[n] in matched or
@@ -2416,6 +2436,10 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         if (not layout or n in ours_at) and fname(n) not in seen_unreadable:
             seen_unreadable.add(fname(n))
             rows.append((label, n, size, "encrypted"))
+    for n, size in sorted(discarded.items()):
+        if n in ours_at and fname(n) not in seen_unreadable:
+            seen_unreadable.add(fname(n))
+            rows.append((label, n, size, "unreferenced"))
     # Functions we wrote that did NOT match: instruction-equivalent
     # near-matches, or code simply not linked into this image. Keyed by symbol
     # since we have no address for them.
@@ -2435,6 +2459,27 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
 
     def unreferenced(n):
         return reach is not None and n not in reach
+
+    # A short function placed by its shape alone proves nothing about the
+    # retail link: a shape that recurs (a 19-byte ~CMoArray storing its
+    # vtable and calling SetSize2, a GenRemoveAll stub) has as many shipped
+    # copies as the image's arrays, and the shape placement hands them out
+    # in name order, to whichever of ours sorts first. So what such a
+    # placement keeps alive is not evidence either: the surplus below
+    # counts against a shape only the functions retail's /OPT:REF would
+    # keep on the strength of what is proven -- placed identical, verified
+    # by relocation, or paired. One that only a shape-placed function (or
+    # its own placement) keeps -- an explicitly instantiated stand-in's
+    # destructor that nothing calls -- is no more shipped than an
+    # unreferenced one, and does not push a referenced one out.
+    shape_only = {n for (lb, a), n in SMALL_SYMS.items()
+                  if lb == label and a in small}
+    strict = reach
+    if reach is not None and shape_only:
+        proven = {n for n in placed_at if n not in shape_only} | claimed
+        proven_f = {fname(n) for n in proven}
+        strict = _referenced(tgt, graphs, mapfile, proven |
+                             {n for n in funcs if fname(n) in proven_f})
 
     unreferenced_named = set()
 
@@ -2460,7 +2505,8 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             # driver's: it is not in the surplus either
             if len(code) - len(mask) >= 8 or n in from_lib or \
                     n not in ours_at or fname(n) in seen or is_driver(n) or \
-                    (unreferenced(n) and unplaced_sym(n)):
+                    (unreferenced(n) and unplaced_sym(n)) or \
+                    (strict is not None and n not in strict):
                 continue
             seen.add(fname(n))
             mine_by_shape.setdefault(shape(code, mask), []).append(n)
