@@ -11,8 +11,9 @@ RAD's binkw32.dll (legacy builds only) and the Microsoft C++ and MFC DLLs
 public archive (build/package.sh) leaves all of that out, and two scripts
 put it back from the player's own copies of the two discs of No One Lives
 Forever 2 -- the European or the USA release, as .iso images or as redump's
-.bin/.cue (or its .zip), which the scripts convert to the .iso first -- and
-of Sierra's English 1.3 update, nolf2-update_1x3.exe:
+.bin/.cue (or its .zip), which the scripts convert to the .iso first -- and,
+for a project whose game directory takes something from one, of an update
+(INSTALL_UPDATE below; NOLF2's 1.3 update's data ships with its release):
 
   linux-install.sh       bash, coreutils and python3 (its zlib inflates)
   windows-install.bat    cmd running the PowerShell it carries (5.1, as every
@@ -38,7 +39,8 @@ works it out against the images and writes it as a list:
   S <name> <id>...                 a set of images the game installs from:
                                    Europe, USA, USA with the other dump of
                                    its disc 2 (redump's "(Alt)"), each with
-                                   the update
+                                   the update when there is one (U and M
+                                   only then)
   V <n> <size> <sha256> <name>     a retail file (as installed) ...
   W copy|is <id>:<offset>:<length>...
                                    ... and a way to read it: those byte
@@ -138,7 +140,9 @@ SETTINGS = {"autoexec.cfg.retail": "autoexec.cfg",
 # A project other than NOLF2 describes its own discs and update in its
 # build/retail.py (tools/retailextract.py reads the same file), setting any
 # of: INSTALL_RELEASE (rez/'s installed release the game's data came from),
-# INSTALL_UPDATE (the update, as rez/'s patches/<name>), INSTALL_DISCS,
+# INSTALL_UPDATE (the update, as rez/'s patches/<name>; None when the game
+# directory takes nothing from one, so the scripts ask only for the discs),
+# INSTALL_DISCS,
 # INSTALL_ALIASES, INSTALL_REGIONS, INSTALL_SETS (as DISCS ... SETS above),
 # INSTALL_TAG (the word in the scripts' data markers: __<TAG>_INSTALL_DATA__,
 # #__<TAG>_PS__ and the <TAG>INSTALL header line, which the project's
@@ -443,18 +447,23 @@ def main():
                 sys.exit(f"mkinstall: {name}.iso is not the image recorded in ALIASES")
         aliases[i] = (name, size, sha, same)
 
-    # The update: its payload, unpacked; its own InstallShield cabinets.
-    archive = os.path.join(REZ, "artifacts", UPDATE + ".tar.xz")
-    if not os.path.isfile(archive):
-        subprocess.run([os.path.join(REZ, "assemble-artifacts.sh"), os.path.basename(UPDATE)],
-                       check=True, stdout=subprocess.DEVNULL)
-    with tarfile.open(archive, "r:xz") as tar:
-        members = [m for m in tar.getmembers() if m.isfile()]
-        exe = tar.extractfile(members[0]).read()
-    upd = Image("upd", os.path.basename(UPDATE), data=exe)
-    cab_at = find_cabinet(exe)
-    payload, pfiles = unpack_folder(exe, cab_at)
-    pay = Image("pay", "the update's cabinet", data=payload)
+    # The update: its payload, unpacked; its own InstallShield cabinets. A
+    # project whose game directory takes nothing from an update (its
+    # INSTALL_UPDATE is None: what it had from one ships with the release)
+    # has none, and the scripts ask only for the discs.
+    upd = pay = None
+    if UPDATE:
+        archive = os.path.join(REZ, "artifacts", UPDATE + ".tar.xz")
+        if not os.path.isfile(archive):
+            subprocess.run([os.path.join(REZ, "assemble-artifacts.sh"), os.path.basename(UPDATE)],
+                           check=True, stdout=subprocess.DEVNULL)
+        with tarfile.open(archive, "r:xz") as tar:
+            members = [m for m in tar.getmembers() if m.isfile()]
+            exe = tar.extractfile(members[0]).read()
+        upd = Image("upd", os.path.basename(UPDATE), data=exe)
+        cab_at = find_cabinet(exe)
+        payload, pfiles = unpack_folder(exe, cab_at)
+        pay = Image("pay", "the update's cabinet", data=payload)
 
     def cabset(find, prefix=""):
         """The cabinet set whose files find(name) -> (image, offset, size)."""
@@ -476,7 +485,7 @@ def main():
                     return (discs[i],) + discs[i].files[name]
             raise KeyError(name)
         cabs[region] = cabset(find)
-    ucabs = cabset(lambda name: (pay,) + pfiles[name], "disk1/")
+    ucabs = cabset(lambda name: (pay,) + pfiles[name], "disk1/") if upd else None
 
     # Where each retail file came from (rez/install-games.sh's record).
     origin = {}
@@ -523,8 +532,10 @@ def main():
         md5, sha = data_md5.digest(), sha256(path)
         frm = origin.get(rp, "")
         ways = []
-        if frm.startswith(UPDATE + ":"):
+        if UPDATE and frm.startswith(UPDATE + ":"):
             ways.append(in_cabs(ucabs, path, size, md5, rp))
+        elif not upd and frm.startswith("patches/"):
+            sys.exit(f"mkinstall: {rp} comes from an update ({frm}), and there is none (INSTALL_UPDATE)")
         else:
             for region, ids in REGIONS.items():
                 if ".iso:" in frm:            # stored as it is on disc 1
@@ -576,10 +587,11 @@ def main():
     for i, (name, size, sha, _same) in aliases.items():
         data.append(f"D {i} {size} {sha} {name}")
         data.append(f"R {i} {size // SECTOR * RAW_SECTOR}")
-    data.append(f"U {upd.id} {upd.size} {upd.sha} {upd.name}")
-    data.append(f"M {pay.id} {upd.id} {cab_at} {pay.size} {pay.sha}")
+    if upd:
+        data.append(f"U {upd.id} {upd.size} {upd.sha} {upd.name}")
+        data.append(f"M {pay.id} {upd.id} {cab_at} {pay.size} {pay.sha}")
     for name, ids in SETS:
-        data.append(f"S {name} {' '.join(ids)} {upd.id}")
+        data.append(f"S {name} {' '.join(ids + ([upd.id] if upd else []))}")
     data += vlines + records
 
     os.makedirs(outdir, exist_ok=True)
@@ -605,14 +617,16 @@ def main():
     with open(os.path.join(outdir, "windows-install.bat"), "w", newline="\r\n") as f:
         f.write("\n".join(bat) + "\n")
 
-    written = sorted(set(wanted) | set(SETTINGS.values()), key=str.lower)
+    # the settings the scripts start from their .retail copies, when those
+    # come from the retail game (a project may ship them with the release)
+    written = sorted(set(wanted) | {SETTINGS[r] for r in SETTINGS if r in wanted}, key=str.lower)
     with open(os.path.join(outdir, "disc-files.txt"), "w") as f:
         for rel in written:
             f.write(rel + "\n")
     with open(os.path.join(outdir, "disc-sums.txt"), "w", newline="\n") as f:
         f.write("".join(line + "\n" for line in sums))
     print(f"   install scripts: {len(written)} files from {len(sources)} retail files "
-          f"on the discs and in the update, {literal} bytes of ours")
+          f"on the discs{' and in the update' if upd else ''}, {literal} bytes of ours")
 
 
 # cmd runs this; everything from the first #__NOLF2_PS__ line on is never
@@ -623,11 +637,10 @@ BAT_HEADER = r"""@echo off
 rem windows-install.bat -- install the game data from your NOLF2 discs.
 rem
 rem   Drop the images of both discs of No One Lives Forever 2 (the European
-rem   or the USA release) and Sierra's English 1.3 update,
-rem   nolf2-update_1x3.exe, onto this file -- or put them in this folder or
+rem   or the USA release) onto this file -- or put them in this folder or
 rem   the one above it and double-click it. Then start the game with
-rem   NOLF2.exe (or, in the legacy build, windows-run.bat). An image is a
-rem   plain .iso, redump's .bin
+rem   NOLF2.exe. (The 1.3 update's data comes with the release.) An image is
+rem   a plain .iso, redump's .bin
 rem   (or its .cue), or redump's .zip download; a .bin or .zip is first
 rem   converted to a temporary .iso in this folder (about 0.6 GB a disc,
 rem   removed at the end).
@@ -638,7 +651,7 @@ rem release). It checks each file's SHA-256, copies the game's data out of them 
 rem this folder and checks every file it writes. Nothing is installed or run
 rem from them. In the legacy build it then registers the game as the
 rem original installer did (the registry values the retail launcher reads:
-rem this folder, the 1.3 update): for all users when run as an
+rem this folder, the 1.3 update's data): for all users when run as an
 rem administrator, else for this Windows user. The modern build's launcher
 rem needs no registry.
 setlocal

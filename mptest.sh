@@ -80,13 +80,14 @@ cat > "$RUN/runner.sh" <<'RUNNER'
 SRVWAIT=$1 SECS=$2 KEYS=$3
 wineboot -i >/dev/null 2>&1
 K='HKLM\Software\Monolith Productions\No One Lives Forever 2\1.0'
-# The 1.3 update as its installer registers it: NOLF2Srv.exe takes the
+# The 1.3 update as its installer registers it, with nolf2src's archive of
+# its data (nolf2src.rez) in place of Update_v1x3.rez: NOLF2Srv.exe takes the
 # update's rez from here (the client from nolf2cmds.txt). Without it the
 # server's attribute files are 1.0's and the game's handshake kicks the client
 # (the weapons/modelbutes/surface CRCs differ).
 wine reg add "$K" /f >/dev/null 2>&1
 wine reg add "$K" /v UpdateNum /t REG_DWORD /d 1 /f >/dev/null 2>&1
-wine reg add "$K" /v UpdateCommandLine0 /t REG_SZ /d '-rez Update_v1x3.rez' /f >/dev/null 2>&1
+wine reg add "$K" /v UpdateCommandLine0 /t REG_SZ /d '-rez nolf2src.rez' /f >/dev/null 2>&1
 (cd server && exec wine NOLF2Srv.exe -profile srvtest +errorlog 1 +alwaysflushlog 1) > wine-server.log 2>&1 & S=$!
 sleep $SRVWAIT
 (cd client && exec wine Lithtech.exe -cmdfile nolf2cmds.txt) > wine-client.log 2>&1 & C=$!
