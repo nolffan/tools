@@ -332,11 +332,24 @@ def rows_for_lib(label, ours_path, libdir):
         label, os.path.basename(cfg.SHIPPED_LIB).format(label))))
     ours = load_lib(os.path.join(REPO, ours_path)) if os.path.exists(
         os.path.join(REPO, ours_path)) else {}
+    # VC6 names a member of an anonymous namespace after the source file as
+    # the compiler was given it and a number made from that: `?%<path>
+    # <digits>@` (ltguieditctrl.cpp's IsFileFriendly carries the directory
+    # the library was built in). The path is the build's, not the
+    # function's, so such a member pairs by its name without it.
+    anon = re.compile(r"\?%[^@]*@")
+    ours_anon = {}
+    for name, code in ours.items():
+        if anon.search(name):
+            ours_anon.setdefault(anon.sub("?%@", name), code)
     rows = []
     for name, code in theirs.items():
-        if name not in ours:
+        mine = ours.get(name)
+        if mine is None and anon.search(name):
+            mine = ours_anon.get(anon.sub("?%@", name))
+        if mine is None:
             status = "todo"
-        elif ours[name] == code:
+        elif mine == code:
             status = "identical"
         else:
             status = "near"
@@ -1081,7 +1094,7 @@ SHAPE_MOVED = []       # (label, symbol, from, to or None), for the report
 
 
 def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
-                       all_hits, mapfile, pe, text, tva):
+                       all_hits, mapfile, pe, text, tva, start_set=()):
     """IDENTICAL BY SHAPE, CHECKED BY WHAT IT CALLS. A function placed by
     its masked bytes with more than one hit (a one-call forwarder, a
     GenRemoveAll's `push alloc; push 0; call SetSize2`) took one of its
@@ -1226,6 +1239,22 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
              if len(ss) == 1 and len(rev[next(iter(ss))]) == 1}
         return m, set(m.values())
 
+    def cstring(which, va):
+        """The C string at va in an image's initialised data: at least four
+        printable characters and their terminator, else None."""
+        if which is pe and s_lo <= va < s_hi:
+            return None
+        o = which.va2off(va)
+        if o is None:
+            return None
+        end = which.d.find(b"\0", o, o + 512)
+        if end < o + 4:
+            return None
+        t = which.d[o:end]
+        if any(c < 0x20 and c not in (9, 10, 13) or c > 0x7e for c in t):
+            return None
+        return bytes(t)
+
     def state(n, sa, m, seen_s):
         oa, res = ours_at[n], "ok"
         for off, kind in relocs(n):
@@ -1234,6 +1263,15 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
                 res = "unmapped"
             elif ov in m:
                 if m[ov] != sv:
+                    return "refuted"
+            elif kind == 0x06 and cstring(ope, ov) is not None and \
+                    cstring(pe, sv) is not None:
+                # a string literal is its own evidence: the stub that
+                # passes "ERROR! LTDirectMusic not Initialized (%s)" is not
+                # the look-alike that passes another format, and is the
+                # one that passes the same (the linker pools them, so no
+                # function placed without ambiguity need name it too)
+                if cstring(ope, ov) != cstring(pe, sv):
                     return "refuted"
             else:
                 # (the shipped operand being some other function or table
@@ -1249,6 +1287,11 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
             ov, sv = operand(ope, oa, off, kind), operand(pe, sa, off, kind)
             if ov is not None and sv is not None and ov in m and m[ov] != sv:
                 return (hex(off), hex(ov), hex(m.get(ov, 0)), hex(sv))
+            if ov is not None and sv is not None and ov not in m and \
+                    kind == 0x06 and cstring(ope, ov) is not None and \
+                    cstring(pe, sv) is not None and \
+                    cstring(ope, ov) != cstring(pe, sv):
+                return (hex(off), cstring(ope, ov), cstring(pe, sv))
 
     holder = {a: n for n, a in at.items()}
     first = dict(at)       # where the shape placement put each
@@ -1377,6 +1420,39 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
             moved = True
         if not moved:
             break
+    # A stub the content pass left without an address is still some
+    # shipped look-alike. That pass hands a shape's hits out in name order
+    # and drops the function left over (five `push arg; push <operand>;
+    # call` stubs, four shipped addresses free at its turn), and a refuted
+    # placement that moved here left its own address empty. Such a stub
+    # takes the one free hit where its operands all map -- the string it
+    # passes among them -- provided no other function of ours fits there
+    # too: two that both check out say nothing about which.
+    took = 0
+    m, seen_s = mapping([n for n in at if n in good or (
+        n not in ambiguous and (n in placed or len(all_hits.get(n, ())) <= 1))])
+    held = set(at) | {n for (lb, _a), n in PLACED_SYMS.items() if lb == label}
+    held_names = {n.split(":", 1)[-1] for n in held}
+    fits = {}
+    for n in sorted(funcs):
+        if n not in ours_at or n in held or n in from_lib or n in placed \
+                or n.split(":", 1)[-1] in held_names or not relocs(n) or \
+                len(funcs[n][0].rstrip(b"\x90\xcc")) - len(funcs[n][1]) >= 16:
+            continue
+        size = len(funcs[n][0])
+        free = [h for h in all_hits.get(n, ())
+                if h in start_set and h not in holder and not any(
+                    b < h + size and h < b + s2 for b, s2 in matched.items())
+                and state(n, h, m, seen_s) == "ok"]
+        if len(free) == 1:
+            fits.setdefault(free[0], []).append(n)
+    for sa, ns in sorted(fits.items()):
+        if len({ours_at[n] for n in ns}) != 1:
+            continue
+        put(ns[0], sa)
+        took += 1
+        if os.environ.get("PROGRESS_SHAPE_LOG"):
+            print("    free", hex(sa), "taken by", ns[0], file=sys.stderr)
     for n in sorted(first):
         if at.get(n) != first[n]:
             SHAPE_MOVED.append((label, n, first[n], at.get(n)))
@@ -1386,7 +1462,9 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
     if rows:
         print(f"  {label}: shape placements their operands refuted: "
               f"{sum(1 for r in rows if r[3] is not None)} moved, "
-              f"{sum(1 for r in rows if r[3] is None)} placed nowhere",
+              f"{sum(1 for r in rows if r[3] is None)} placed nowhere"
+              + (f", {took} free address(es) taken by the stub whose "
+                 f"operands map there" if took else ""),
               file=sys.stderr)
         if os.environ.get("PROGRESS_SHAPE_LOG"):
             for r in rows:
@@ -1648,7 +1726,7 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                               min(above) if above else tva + len(text))
 
     _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
-                       all_hits, mapfile, pe, text, tva)
+                       all_hits, mapfile, pe, text, tva, start_set)
 
     # A function of ours matched where the enumeration has no start is a
     # start it missed (a function reached only through a thunk or a table
