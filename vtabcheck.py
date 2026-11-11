@@ -811,6 +811,16 @@ def main():
                 if nxt_names and not {class_of(n_) for n_ in nxt_names} & ours_cls:
                     sslots = sslots[:len(oslots)]
                     break
+        # MFC puts a class's AFX_MSGMAP right after its vtable in .rdata:
+        # its first word points at GetThisMessageMap (or, before MFC 7,
+        # _GetBaseMessageMap), code like a slot. Past our table's end such a
+        # pointer ends the shipped one too (Contract J.A.C.K.'s
+        # CMoveDialog: 88 slots, then GetThisMessageMap).
+        for k_ in range(len(oslots), len(sslots)):
+            if any(re.search(r"\?(GetThisMessageMap|_GetBaseMessageMap)@", n_)
+                   for n_ in ship2sym.get(sslots[k_], ())):
+                sslots = sslots[:k_]
+                break
         probs = []
         for k, st in enumerate(sslots):
             if k >= len(oslots):
