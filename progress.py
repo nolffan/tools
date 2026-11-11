@@ -1077,6 +1077,296 @@ def _resolve_overlaps(label, matched, placed, start_set, funcs, all_hits,
               f"a better one", file=sys.stderr)
 
 
+SHAPE_MOVED = []       # (label, symbol, from, to or None), for the report
+
+
+def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
+                       all_hits, mapfile, pe, text, tva):
+    """IDENTICAL BY SHAPE, CHECKED BY WHAT IT CALLS. A function placed by
+    its masked bytes with more than one hit (a one-call forwarder, a
+    GenRemoveAll's `push alloc; push 0; call SetSize2`) took one of its
+    look-alikes by name order and object proximity: the masked comparison
+    cannot tell `push; call con_Term` from `push; call dfree` (console.cpp's
+    cc_TermState was credited identical at lithtech.exe 0x00479ee0, the
+    operator delete, and as a false anchor left con_Term's address
+    unresolvable for every caller). Where our image is linked, every
+    relocated operand is resolved, and what it names can be compared
+    through a mapping of our addresses to the shipped ones built from the
+    functions placed without that ambiguity (one hit, or at the address
+    their name gives): their own addresses and their relocated operands,
+    a contradiction mapping nothing.
+
+    Only stubs are checked -- fewer than 16 bytes the mask leaves, a
+    calling convention around a call or two, the shapes that recur. (A
+    longer look-alike is a template instance or a deleting destructor of
+    one of the classes our source still has two views of, and the mapping
+    then speaks for the view, not for which copy is which.) A stub one of
+    whose operands maps elsewhere (ours calls con_Term, which maps to the
+    shipped con_Term, where the shipped look-alike calls dfree) is
+    REFUTED; a shipped operand that is merely another function of ours is
+    not proof (two views, one shipped class). A refuted stub moves only to
+    a hit where its operands all map (the nearest): free, held by a stub
+    refuted there or only unmapped there, or held by a copy our link does
+    not have. With no such hit it stays where it is: the evidence says
+    the address is wrong, not which one is right (an initializer group
+    whose globals our source declares in another order refutes every
+    member and verifies none). A stub it took the address from goes to
+    its nearest unrefuted hit, or nowhere -- that address was proven
+    another's. A body our link folded into another object's
+    identical one (the map lists it under that object) is checked at that
+    address. Placements that check out join the mapping, and the pass
+    repeats until nothing moves."""
+    SHAPE_MOVED[:] = [r for r in SHAPE_MOVED if r[0] != label]
+    our_img = built_image(tgt)
+    layout = _our_layout(mapfile) if mapfile else None
+    if not our_img or not layout:
+        return
+    ope = Pe(os.path.join(REPO, our_img))
+    o_secs = [(sva, sva + vs) for sva, vs, _rp in ope.secs.values()]
+    s_lo, s_hi = tva, tva + len(text)
+    def dword(p, va):
+        o = p.va2off(va)
+        return struct.unpack_from("<I", p.d, o)[0] \
+            if o is not None and o + 4 <= len(p.d) else None
+
+    by_sym = {}
+    for (mod, sym), a in layout.items():
+        by_sym.setdefault(sym, set()).add(a)
+    ours_at = {}
+    for n in funcs:
+        if n in from_lib or ":" not in n:
+            continue
+        mod, sym = n.split(":", 1)
+        a = layout.get((mod.lower(), sym))
+        if a is None and len(by_sym.get(sym, ())) == 1:
+            # a body /OPT:ICF folded into another object's identical one
+            # (the map lists the name under that object), or a COMDAT
+            # another object's copy stands for: that address, provided our
+            # image's bytes there are this copy's, so its relocations hold
+            a = next(iter(by_sym[sym]))
+            code, mask = funcs[n]
+            o = ope.va2off(a)
+            if o is None or o + len(code) > len(ope.d) or any(
+                    i not in mask and ope.d[o + i] != code[i]
+                    for i in range(len(code))):
+                a = None
+        if a is not None:
+            ours_at[n] = a
+
+    def operand(which, fa, off, kind):
+        if which is pe and s_lo <= fa + off < s_hi - 3:
+            v = struct.unpack_from("<I", text, fa + off - tva)[0]
+        else:
+            v = dword(which, fa + off)
+        if v is None:
+            return None
+        if kind == 0x14:                    # REL32
+            r = (fa + off + 4 + v) & 0xFFFFFFFF
+        elif kind == 0x06:                  # DIR32
+            r = v
+        elif kind == 0x07:                  # DIR32NB, an RVA
+            r = (v + which.base) & 0xFFFFFFFF
+        else:
+            return None
+        # (an unresolved symbol of a /FORCE link is the image base: unknown)
+        if which is ope and not any(lo <= r < hi for lo, hi in o_secs):
+            return None
+        return r
+
+    def relocs(n):
+        code = funcs[n][0]
+        end = len(code)
+        return [(o, k) for o, k in sorted(rkinds.get(n, {}).items())
+                if o + 4 <= end]
+
+    at = {}
+    for (lb, a), n in PLACED_SYMS.items():
+        if lb == label and a in matched and n in ours_at:
+            at[n] = a
+    # (a stub: under 16 bytes the mask leaves -- the shape is then little
+    # more than a calling convention around its call, and recurs; a longer
+    # look-alike is a template instance or a view's member, whose copies
+    # are another question)
+    ambiguous = {n for n in at if n not in placed and relocs(n) and
+                 len(all_hits.get(n, ())) > 1 and
+                 len(funcs[n][0].rstrip(b"\x90\xcc")) - len(funcs[n][1]) < 16}
+    if not ambiguous:
+        return
+    o_imp, s_imp = {}, {}
+    for p, out in ((ope, o_imp), (pe, s_imp)):
+        dup = set()
+        for slot, nm in p.imports().items():
+            if not nm or nm.endswith("…") or nm.endswith("!None"):
+                continue
+            if nm in out:
+                dup.add(nm)
+            out[nm] = slot
+        for nm in dup:
+            out.pop(nm)
+
+    def mapping(proven):
+        fwd, rev = {}, {}
+        for n in proven:
+            oa, sa = ours_at[n], at[n]
+            pairs = [(oa, sa)]
+            for off, kind in relocs(n):
+                ov, sv = operand(ope, oa, off, kind), operand(pe, sa, off, kind)
+                if ov is not None and sv is not None:
+                    pairs.append((ov, sv))
+            for ov, sv in pairs:
+                fwd.setdefault(ov, set()).add(sv)
+                rev.setdefault(sv, set()).add(ov)
+        for nm, slot in o_imp.items():
+            if nm in s_imp:
+                fwd.setdefault(slot, set()).add(s_imp[nm])
+                rev.setdefault(s_imp[nm], set()).add(slot)
+        m = {o: next(iter(ss)) for o, ss in fwd.items()
+             if len(ss) == 1 and len(rev[next(iter(ss))]) == 1}
+        return m, set(m.values())
+
+    def state(n, sa, m, seen_s):
+        oa, res = ours_at[n], "ok"
+        for off, kind in relocs(n):
+            ov, sv = operand(ope, oa, off, kind), operand(pe, sa, off, kind)
+            if ov is None or sv is None:
+                res = "unmapped"
+            elif ov in m:
+                if m[ov] != sv:
+                    return "refuted"
+            else:
+                # (the shipped operand being some other function or table
+                # of ours is not proof here: one shipped class our source
+                # still has two views of, one vtable each, says nothing
+                # about which look-alike this is)
+                res = "unmapped"
+        return res
+
+    def why(n, sa, m, seen_s):
+        oa = ours_at[n]
+        for off, kind in relocs(n):
+            ov, sv = operand(ope, oa, off, kind), operand(pe, sa, off, kind)
+            if ov is not None and sv is not None and ov in m and m[ov] != sv:
+                return (hex(off), hex(ov), hex(m.get(ov, 0)), hex(sv))
+
+    holder = {a: n for n, a in at.items()}
+    first = dict(at)       # where the shape placement put each
+    good, homeless = set(), []
+
+    def unplace(n):
+        sa = at.pop(n)
+        del matched[sa]
+        PLACED_SYMS.pop((label, sa), None)
+        holder.pop(sa, None)
+        homeless.append(n)
+
+    def unlinked_at(h):
+        """h holds (exactly, at its start) a copy our link does not have:
+        a COMDAT duplicate another object's copy stands in for in our
+        image, or one /OPT:ICF folded away."""
+        hn = PLACED_SYMS.get((label, h))
+        return hn is not None and hn not in from_lib and \
+            hn not in ours_at and hn not in placed
+
+    def pick(n, m, seen_s, own):
+        """n's best hit: free, or held by an ambiguous placement not yet
+        checked out that is refuted there (or merely unmapped where n's
+        operands all map); one whose operands all map first, then the
+        nearest to where the shape placement put it. From `own` (n's
+        refuted address) only a hit whose operands all map."""
+        best = None
+        size = len(funcs[n][0])
+        for h in all_hits.get(n, ()):
+            if h == own:
+                continue
+            hs = state(n, h, m, seen_s)
+            if hs == "refuted" or (own is not None and hs != "ok"):
+                continue
+            hn = holder.get(h)
+            if hn is not None:
+                if hn in good or hn not in ambiguous:
+                    continue
+                hns = state(hn, h, m, seen_s)
+                if hns != "refuted" and not (hs == "ok" and hns != "ok"):
+                    continue
+            elif hs == "ok" and h in matched and unlinked_at(h):
+                pass
+            elif any(b < h + size and h < b + s for b, s in matched.items()
+                     if b != own):
+                continue
+            key = (hs != "ok", abs(h - first[n]))
+            if best is None or key < best[0]:
+                best = (key, h)
+        return None if best is None else best[1]
+
+    def put(n, h):
+        hn = holder.get(h)
+        if hn is not None:
+            unplace(hn)
+        elif h in matched:
+            # a copy our link does not have: nothing of our image is
+            # there, and what n's operands name says n is
+            SHAPE_MOVED.append((label, PLACED_SYMS.pop((label, h)), h, None))
+            del matched[h]
+        matched[h] = len(funcs[n][0])
+        PLACED_SYMS[(label, h)] = n
+        holder[h], at[n] = n, h
+
+    stuck = set()
+    for _round in range(16):
+        m, seen_s = mapping([n for n in at if n in good or (
+            n not in ambiguous and (n in placed or len(all_hits.get(n, ())) <= 1))])
+        moved = False
+        for n in sorted(ambiguous):
+            if n not in at or n in good or n in stuck:
+                continue
+            st = state(n, at[n], m, seen_s)
+            if st == "ok":
+                good.add(n)
+                moved = True
+            elif st == "refuted":
+                # it moves only where its operands all map: refuted with
+                # nowhere proven to go, it stays (the evidence says this
+                # address is wrong, not which one is right)
+                sa = at[n]
+                h = pick(n, m, seen_s, sa)
+                if h is None:
+                    stuck.add(n)
+                    continue
+                if os.environ.get("PROGRESS_SHAPE_LOG"):
+                    print("    refuted", n, hex(sa), why(n, sa, m, seen_s),
+                          "->", hex(h), file=sys.stderr)
+                del at[n]
+                del matched[sa]
+                PLACED_SYMS.pop((label, sa), None)
+                holder.pop(sa, None)
+                put(n, h)
+                moved = True
+        # what a verified placement took an address from goes to its best
+        # unrefuted hit, or nowhere: that address was proven another's
+        for n in list(homeless):
+            h = pick(n, m, seen_s, None)
+            if h is None:
+                continue
+            homeless.remove(n)
+            put(n, h)
+            moved = True
+        if not moved:
+            break
+    for n in sorted(first):
+        if at.get(n) != first[n]:
+            SHAPE_MOVED.append((label, n, first[n], at.get(n)))
+    rows = [r for r in SHAPE_MOVED if r[0] == label]
+    if rows:
+        print(f"  {label}: shape placements their operands refuted: "
+              f"{sum(1 for r in rows if r[3] is not None)} moved, "
+              f"{sum(1 for r in rows if r[3] is None)} placed nowhere",
+              file=sys.stderr)
+        if os.environ.get("PROGRESS_SHAPE_LOG"):
+            for r in rows:
+                print(f"    {r[1]} {r[2]:#x} -> "
+                      f"{'-' if r[3] is None else hex(r[3])}", file=sys.stderr)
+
+
 def _rows_for_image(tgt, objs, mapfile, linked_path):
     """A PE image under reconstruction (exe or dll, no symbols).
 
@@ -1329,6 +1619,9 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             above = [a for a in order if a >= h0 and foreign(a, mod)]
             lib_block[mod] = (max(below) if below else tva,
                               min(above) if above else tva + len(text))
+
+    _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
+                       all_hits, mapfile, pe, text, tva)
 
     # A function of ours matched where the enumeration has no start is a
     # start it missed (a function reached only through a thunk or a table
