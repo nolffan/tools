@@ -3,7 +3,11 @@
 These guides were written for [nolfsrc](https://github.com/nolffan/nolfsrc),
 the *No One Lives Forever* reconstruction, which carries this repository as
 its `tools/`: paths such as `tools/fndiff.py` and links into `../../` are
-that project's.
+that project's. Guides 15 to 18, and the later sections of the others,
+draw on the projects that followed -- nolf2src, cjacksrc (*Contract
+J.A.C.K.*), avp2src (*Aliens versus Predator 2*), tron20src (*Tron 2.0*)
+and lithtools (the LithTech development tools) -- and cite them by name and
+commit.
 
 How to take one function from a retail NOLF binary and write C++ that the
 original toolchain compiles to **byte-identical machine code**.
@@ -98,6 +102,20 @@ which compiler revision built which binary.
     `progress/`, checking a change with `make progress`, recording it with
     `make progress-update`, reading the worklists, correcting the
     enumeration, and adapting the scorer to another project.
+15. **[15-sibling-games](15_sibling_games.md)** -- starting a new game from
+    a sibling's reconstruction: choosing and dating the base tree, merging
+    the game's own source onto it, fixing interface and class layouts
+    before any function, and the first build as a gate.
+16. **[16-tu-mapping](16_tu_mapping.md)** -- cutting a symbol-less image
+    into its translation units, and reading the project and link structure
+    off the addresses: padding, initializer tables, `.bss`, boundary
+    markers, function order.
+17. **[17-tools-and-mfc](17_tools_and_mfc.md)** -- the development tools:
+    MFC applications, their resources, behaviour tests against retail, and
+    the file formats they read.
+18. **[18-modern-builds](18_modern_builds.md)** -- the modern variant: what
+    carries from one game to the next (presentation under Wine, input,
+    frame rate, middleware replacements) and where each game has it.
 
 ## Picking a target
 
