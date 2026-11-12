@@ -655,6 +655,14 @@ def main():
     # vptr store of a constructor no placement reaches): every dword of
     # the image, at any offset, that points into .rdata
     lo_r, hi_r = min(shipped_tabs or [0]), max(shipped_tabs or [0]) + 0x10000
+    # A target with no vtabaudit table (NOLF's game DLLs: build/reference.sh
+    # audits only the engine images) has no range from those: take the
+    # shipped .rdata whole, or the cut never fires and a table with no
+    # placed neighbour runs on (Object.lto's CAIPoodleState into
+    # CAIPoodleStateDischarge).
+    if not shipped_tabs and ".rdata" in ship.pe.secs:
+        sva_, vs_, _rp = ship.pe.secs[".rdata"]
+        lo_r, hi_r = sva_, sva_ + vs_
     refs = set()
     dd = ship.d if hasattr(ship, "d") else open(os.path.join(REPO, ship_path), "rb").read()
     for i in range(len(dd) - 3):
