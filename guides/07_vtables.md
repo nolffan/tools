@@ -100,3 +100,94 @@ Once a target links, `tools/vtabcheck.py` closes the loop the other way: it
 compares our linked image's vtables with the shipped ones slot by slot, which
 catches a constructor that is byte-identical (the vptr store is a masked
 relocation) while installing a stand-in table that is too short.
+
+## Where a table ends: what vtabcheck learned
+
+`vtabcheck.py --targets` is a gate of `make progress` now
+([14](14_progress.md#what-a-run-rests-on)), so a table it reads too long
+fails the build. Nothing in `.rdata` marks a vtable's end, and each of
+these read one on into whatever followed it:
+
+* **An MFC message map.** MFC puts a class's `AFX_MSGMAP` right after its
+  vtable, and the map's first word points at `GetThisMessageMap`
+  (`_GetBaseMessageMap` before MFC 7): code, so it reads as one more slot.
+  Contract J.A.C.K.'s `CMoveDialog` read as 89 slots against our 88, all
+  88 agreeing (cjacksrc 6937926). Past our table's end, such a pointer
+  now ends the shipped one too (tools 568aedf, in `vtabcheck.py`'s slot
+  comparison). The same macro is a landmark in code: the message-map
+  accessor `BEGIN_MESSAGE_MAP` emits sits at the macro's place in its
+  `.cpp`, so it says which module, and where in it, the functions beside
+  it belong to. DEdit's `InitTracker` at 0x452bb7, just after
+  `CRegionView`'s `GetMessageMap` at 0x452bb1, put it back in
+  `RegionView.cpp` from a file of its own (lithtools 7a5d6ab).
+* **Folded template tables back to back.** DEdit's `CMoArray<T*>`
+  instantiations have their code folded into one, so three 12-slot
+  vtables (0x4da860, 0x4da890, 0x4da8c0) are identical with no symbol or
+  reference between them, and the check read one 36-slot table. Ours
+  matches the first 12; it is recorded in `vtab-known.txt` as a read-on
+  (lithtools d0118e2).
+* **No reference range.** A shipped table is also cut where the image
+  refers into it, which needs the range of tables to look in. Only NOLF's
+  engine images have a `vtabaudit` table; elsewhere the range was
+  0..0x10000, nothing cut, and an abstract table with no placed neighbour
+  ran on into the next (Object.lto's `CAIPoodleState` into
+  `CAIPoodleStateDischarge`). A target with no audited tables now takes
+  the shipped image's `.rdata` as its range (tools e3a10a3).
+* **A statically linked `_purecall`.** Abstract slots hold `_purecall`,
+  which the check finds as the `jmp [IAT]` thunk of `MSVCRT!_purecall`.
+  An image that links the CRT statically has no such thunk, so the last
+  slot of every abstract table was unverifiable. Give the target its
+  address as `purecall` in `progress/targets.py` (nolfsrc f91c788:
+  `CShell.dll` and `Object.lto`, as `lithtech.exe` already had it).
+
+## When placement votes: ties and twins
+
+The scorer places the functions of a class by vtable slot: our table and
+the shipped one vote on which retail row each of our virtuals is. Votes go
+wrong in recognisable ways.
+
+* **A tie places nothing.** Sibling classes that inherit a base's virtuals
+  unchanged have the same functions in those slots, so once the base's
+  virtuals are identical every sibling's table gets the same votes, and
+  the first table won: Primal Hunt's `CProxGrenade` virtuals landed on
+  `CPredDisk`'s retail rows. A table another table ties is now left
+  unplaced (`progress.py`, tools c83182e).
+
+avp2src builds its engines' full interface vtables from the scoreboard's
+placements (its `build/vtables/mkvtables.py`, linked through
+`tools/mkvtabobj.py`), and booting them found three more rules for any
+table built or checked that way:
+
+* **Twins with the same masked bytes.** `ILTServer`'s slot 46,
+  `CreateString`, held `LAlloc::Alloc` -- the same bytes once relocations
+  are masked (avp2src 27eb79d); `ILTModel`'s `GetNode` and `GetSocket`
+  were placed each at the other's address (baebb5b). Tell twins apart by
+  what their operands reach: a candidate whose call reaches a different
+  function of ours than retail's call does is rejected, and twins are
+  compared outside the union of both masks.
+* **A placement its own calls refute gets no vote.** The swapped
+  `GetNode`/`GetSocket` voted for the wrong string addresses in turn
+  (baebb5b).
+* **A class's own function beats a base stub.** `CObjWorldModel`'s table
+  kept `CObjBase`'s inherited empty virtuals in eight slots -- `WantsTree`
+  (27eb79d), and slot 7, `OnFoundInBox`, which the world tree's frustum
+  walk calls on every world model (baebb5b) -- and the world rendered
+  black. A class's own placed function, near-paired or not, now wins
+  over its base's stub, the hierarchy read from the sources.
+
+Every one of these looked fine to the scorer; they were found by running
+the game ([05](05_exe_and_engine.md#running-the-thing--nears-have-to-execute)).
+
+## Classes with RTTI
+
+A game built `/GR` carries RTTI for every polymorphic class in both images,
+and that pairs tables without any header: each vtable is preceded by a
+pointer to its complete object locator, which names the type descriptor
+(`.?AV<class>@@`) and, through the class hierarchy descriptor, the bases
+and their offsets. tron20src pairs its game's vtables with retail's this
+way and checks hand-edited headers with a probe -- a member pointer to each
+virtual, whose compiled vcall thunk names the slot VC6 gives it -- which is
+how it found that VC6 lays out a name's virtual overloads in the
+**reverse** of their declaration order (tron20src b4717cd, 4e170d2). Those
+helpers are tron20src-local scratch scripts (its gitignored `out/work/`),
+not tools here; [15](15_sibling_games.md) covers the method in depth.
