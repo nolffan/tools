@@ -37,7 +37,8 @@ import math
 import os
 import sys
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from layout import PROJECT as REPO  # noqa: E402
 RUN = "out/progress"
 BASE = "progress"
 README = "README.md"

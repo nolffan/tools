@@ -38,7 +38,7 @@
 #   EXITED   one of them stopped (which)
 # Exit status 0 only for JOINED.
 set -u
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$(dirname "${BASH_SOURCE[0]}")/layout.sh"
 for t in wine xvfb-run xdotool convert montage; do
     command -v $t >/dev/null 2>&1 || { echo "mptest.sh: no $t here -- run it in the build container (make shell)"; exit 2; }
 done

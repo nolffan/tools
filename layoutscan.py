@@ -16,11 +16,12 @@ The target (default Lithtech) is anything progress/targets.py knows it by
 (tools/tgt.py); each near's object is found among our link's inputs.
 """
 import re, subprocess, sys, collections, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 import tgt as tgt_mod  # noqa: E402
 
 def nears(target):
-    out = subprocess.run([sys.executable, "tools/progress.py", "--nears=" + target],
+    out = subprocess.run([sys.executable, os.path.join(HERE, "progress.py"), "--nears=" + target],
                          capture_output=True, text=True).stdout
     rows = []
     for ln in out.splitlines():
@@ -35,7 +36,7 @@ def analyse(addr, obj, sym, image, tgt):
     path = tgt_mod.obj_path(tgt, obj)
     if not path:
         return None
-    r = subprocess.run([sys.executable, "tools/fndiff.py", addr,
+    r = subprocess.run([sys.executable, os.path.join(HERE, "fndiff.py"), addr,
                         path, sym, "--image=" + image],
                        capture_output=True, text=True).stdout
     if "mnemonic diff: 0 block(s)" not in r:

@@ -55,6 +55,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import layout  # noqa: E402
 from rezextract import Rez  # noqa: E402
 
 LIST = "MODERN-DATA.txt"
@@ -310,7 +311,7 @@ def cmd_diff(gamedir, path, edited):
 def main():
     a = sys.argv[1:]
     if len(a) >= 2 and a[0] == "apply":
-        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        here = layout.PROJECT
         cmd_apply(a[1], a[2] if len(a) > 2 else os.path.join(here, "src/modern/data"))
     elif len(a) == 3 and a[0] == "show":
         cmd_show(a[1], a[2])

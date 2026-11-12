@@ -6,7 +6,8 @@
 # Lithtech.exe's link (out of its .rsp), /FORCE:MULTIPLE so that rtest's
 # WinMain wins over client.cpp's. Never part of the game or the score.
 set -e
-source "$(dirname "$0")/../../build/env.sh"
+source "$(dirname "$0")/../layout.sh"
+source "$REPO/build/env.sh"
 cd "$REPO"
 OUT="$REPO/out/rendertest"
 mkdir -p "$OUT"

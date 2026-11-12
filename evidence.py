@@ -34,6 +34,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import progress  # noqa: E402
+from layout import sibling  # noqa: E402
 
 REPO = progress.REPO
 
@@ -123,15 +124,15 @@ def main():
         for c in glob.glob(os.path.join(d, "**", "*.cmd"), recursive=True):
             used.update(tc_re.findall(open(c, errors="replace").read()))
     pinned = {}
-    fetch = os.path.join("toolchains", "fetch.sh")
+    fetch = os.path.join(sibling("toolchains"), "fetch.sh")
     if os.path.exists(fetch):
         for m in re.finditer(r"\[([A-Za-z0-9_.+-]+)\]=([0-9a-f]{64})",
                              open(fetch).read()):
             pinned[m.group(1)] = m.group(2)
     for name in sorted(used):
         rec = {"pinned": pinned.get(name)}
-        if os.path.isdir(os.path.join("toolchains", name)):
-            got = tree_sha(os.path.join("toolchains", name))
+        if os.path.isdir(os.path.join(sibling("toolchains"), name)):
+            got = tree_sha(os.path.join(sibling("toolchains"), name))
             rec["computed"] = got
             rec["matches"] = got == rec["pinned"]
         ev["toolchains"][name] = rec

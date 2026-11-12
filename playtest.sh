@@ -133,7 +133,7 @@
 # roughly < 0.1 = the same view, > 0.2 = a different screen), and writes
 # out/play/compare-<runA>-<runB>.png (A left, B right, one row per shot).
 set -u
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$(dirname "${BASH_SOURCE[0]}")/layout.sh"
 for t in wine xvfb-run xdotool convert; do
     command -v $t >/dev/null 2>&1 || { echo "playtest.sh: no $t here -- run it in the build container (make test / make shell)"; exit 2; }
 done

@@ -19,7 +19,10 @@ import os
 import re
 import sys
 
-INC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from layout import PROJECT  # noqa: E402
+
+INC = os.path.join(PROJECT,
                    "src", "Engine", "sdk", "inc")
 for _a in list(sys.argv[1:]):
     if _a.startswith("--inc="):

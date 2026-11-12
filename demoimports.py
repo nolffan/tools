@@ -87,7 +87,8 @@ import subprocess
 import sys
 import tarfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from layout import PROJECT as ROOT, sibling  # noqa: E402
 RETAIL = os.path.join(ROOT, "out/reference/Lithtech.exe")
 
 # Per game: the retail engine (its sha256), the demo, SecuROM's redirect
@@ -95,7 +96,7 @@ RETAIL = os.path.join(ROOT, "out/reference/Lithtech.exe")
 PROFILES = {
     "nolf2": dict(
         retail_sha256="4e83a4be52e10586d93077ef746874a751a25ad4d079d79347d92fce02e172e9",
-        artifact="rez/artifacts/demos/nolf2_mpdemo_en.exe.tar.xz",
+        artifact="artifacts/demos/nolf2_mpdemo_en.exe.tar.xz",
         member="nolf2_mpdemo_en.exe",
         unshield=["-o", "-g", "Resources"], cab="data1.cab", group="Resources",
         outdir="out/mpdemo",
@@ -109,7 +110,7 @@ PROFILES = {
         csv="progress/engine/Lithtech-iat-calls.csv"),
     "cjack": dict(
         retail_sha256="7b8a9540e213bf114e098ffce0b9ca08b633343b320f640dc195478ebea533bd",
-        setup="rez/demos/contractjack_demo_sp.exe",
+        setup="demos/contractjack_demo_sp.exe",
         unshield=["-o", "-g", "Program Files"], cab="data1.hdr", group="Program_Files",
         outdir="out/spdemo",
         demo_sha256={
@@ -228,17 +229,17 @@ def need_demo():
 # ---------------------------------------------------------------- extract
 
 def cmd_extract(args):
-    unshield = os.path.join(ROOT, "rez/tools/unshield/unshield")
+    unshield = os.path.join(sibling("rez"), "tools/unshield/unshield")
     if not os.access(unshield, os.X_OK):
         sys.exit("demoimports: rez/tools/unshield/unshield is not built -- `make -C rez/tools/unshield`")
     work = os.path.join(OUTDIR, "work")
     os.makedirs(work, exist_ok=True)
     if "setup" in P:
-        exe = os.path.join(ROOT, P["setup"])
+        exe = os.path.join(sibling("rez"), P["setup"])
         if not os.path.exists(exe):
             sys.exit("demoimports: %s is missing (rez/)" % P["setup"])
     else:
-        artifact = os.path.join(ROOT, P["artifact"])
+        artifact = os.path.join(sibling("rez"), P["artifact"])
         if not os.path.exists(artifact):
             sys.exit("demoimports: %s is missing -- run `rez/assemble-artifacts.sh demos`" % P["artifact"])
         exe = os.path.join(work, P["member"])
@@ -249,7 +250,7 @@ def cmd_extract(args):
                     shutil.copyfileobj(f, g)
     disk = os.path.join(work, "sfx")
     if not os.path.exists(os.path.join(disk, "Disk1", "data1.hdr")):
-        subprocess.run([sys.executable, "-I", os.path.join(ROOT, "rez/tools/sfxcab.py"), exe, disk], check=True,
+        subprocess.run([sys.executable, "-I", os.path.join(sibling("rez"), "tools/sfxcab.py"), exe, disk], check=True,
                        stdout=subprocess.DEVNULL)
     xdir = os.path.join(work, "x")
     subprocess.run([unshield] + P["unshield"] + ["-d", xdir, "x", os.path.join(disk, "Disk1", P["cab"])],

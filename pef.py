@@ -48,8 +48,10 @@ import re
 import struct
 import sys
 
-DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rez",
-                       "games", "nolf-mac-usa", "NOLF", "LithTech")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from layout import sibling  # noqa: E402
+
+DEFAULT = os.path.join(sibling("rez"), "games", "nolf-mac-usa", "NOLF", "LithTech")
 
 
 def vnum(b, i):

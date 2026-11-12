@@ -67,7 +67,7 @@ from linkresolve import parse_obj  # noqa: E402
 from exedump import Pe  # noqa: E402
 from libextract import extract  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from layout import PROJECT as REPO  # noqa: E402
 
 # The CRT's _purecall in each shipped image (every abstract table's filler):
 # filled in main() from the image, or progress/targets.py's `purecall`.

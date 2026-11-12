@@ -36,6 +36,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import layout  # noqa: E402
 import tgt as tgt_mod  # noqa: E402
 
 
@@ -109,8 +110,7 @@ def todo_addrs(image_path):
     target = t["label"] if t else os.path.basename(image_path)
     if target in _TODO_CACHE:
         return _TODO_CACHE[target]
-    path = os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "out", "progress", "functions.csv")
+    path = os.path.join(layout.PROJECT, "out", "progress", "functions.csv")
     out = set()
     try:
         with open(path, newline="") as fh:

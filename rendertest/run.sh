@@ -2,7 +2,8 @@
 # tools/rendertest/run.sh [seconds-to-screenshot]: runs out/rendertest/rtest.exe
 # under Wine and Xvfb (in the build container); prints its log (rtest.log)
 # and leaves shot.png (the screen after a few seconds) and wine.log beside it.
-cd "$(dirname "$0")/../../out/rendertest" || exit 1
+source "$(dirname "$0")/../layout.sh"
+cd "$REPO/out/rendertest" || exit 1
 rm -f rtest.log shot.png
 export WINEDEBUG=${WINEDEBUG:--all,+seh,err+d3d}
 cat > inner.sh <<IN

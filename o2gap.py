@@ -57,7 +57,8 @@ import re
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 import tgt as tgt_mod  # noqa: E402
 
 SRV_T = tgt_mod.find("server")
@@ -82,7 +83,7 @@ def matches(image, obj):
     other target does not compile, and counting it would invent work."""
     if not obj or not os.path.exists(obj):
         return {}
-    out = subprocess.run([sys.executable, "tools/exematch.py", image, obj],
+    out = subprocess.run([sys.executable, os.path.join(HERE, "exematch.py"), image, obj],
                          capture_output=True, text=True).stdout
     d = {}
     for line in out.splitlines():

@@ -38,7 +38,8 @@ import re
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 
 import tgt as tgt_mod  # noqa: E402
 
@@ -172,7 +173,7 @@ def main():
 
                 def run(sym):
                     return subprocess.run(
-                        [sys.executable, "tools/callseq.py", image, hex(addr),
+                        [sys.executable, os.path.join(HERE, "callseq.py"), image, hex(addr),
                          hex(addr + size), obj, sym],
                         capture_output=True, text=True).stdout
                 out = run("sub_%x" % addr)
@@ -217,7 +218,7 @@ def main():
                 print(f"  {r['file']}: no object, build it first", file=sys.stderr)
                 continue
             out = subprocess.run(
-                [sys.executable, "tools/callseq.py", IMAGES[target], hex(addr),
+                [sys.executable, os.path.join(HERE, "callseq.py"), IMAGES[target], hex(addr),
                  hex(addr + size), obj, r["symbol"]],
                 capture_output=True, text=True).stdout
             ship = ours = agree = 0

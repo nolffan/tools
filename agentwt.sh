@@ -8,8 +8,8 @@
 # not tracked:
 #
 #   toolchains/       the compilers and SDKs (a submodule, not checked out
-#                     in a worktree)
-#   rez/              the installed retail game (build/retail.sh), the
+#                     in a worktree; ext/toolchains/ in the newer layout)
+#   rez/              (or ext/rez/) the installed retail game (build/retail.sh), the
 #                     Jupiter SDK (rez/sdk/, build/jupiter.sh) and the demo
 #                     and patch artifacts (a submodule too)
 #   out/reference/    the retail images the checks compare against
@@ -39,7 +39,7 @@
 #         tools/agentwt.sh rm  <name>
 #         tools/agentwt.sh list
 set -e
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$(dirname "${BASH_SOURCE[0]}")/layout.sh"
 WTROOT="$REPO/.worktrees"
 
 case "${1:-list}" in
@@ -59,13 +59,15 @@ add)
     # like any source (hard links would edit the main checkout's)
     # (cloned from the main checkout's, which has commits not yet pushed;
     # the coordinator fetches the tree's tools commits back from it)
-    if [ -f "$REPO/tools/.git" ] && [ ! -e "$dir/tools/.git" ]; then
-        rmdir "$dir/tools" 2>/dev/null || true
-        git clone -q "$REPO/tools" "$dir/tools"
-        git -C "$dir/tools" checkout -q "$(git -C "$dir" ls-tree HEAD tools | awk '{print $3}')"
+    # (tools/ or ext/tools/: layout.sh)
+    t="${TOOLS#"$REPO"/}"
+    if [ -f "$REPO/$t/.git" ] && [ ! -e "$dir/$t/.git" ]; then
+        rmdir "$dir/$t" 2>/dev/null || true
+        git clone -q "$REPO/$t" "$dir/$t"
+        git -C "$dir/$t" checkout -q "$(git -C "$dir" ls-tree HEAD "$t" | awk '{print $3}')"
     fi
     # the submodules' contents and the reference images, hard-linked
-    for d in toolchains rez out/reference ext/ffmpeg; do
+    for d in toolchains rez ext/toolchains ext/rez out/reference ext/ffmpeg; do
         [ -d "$REPO/$d" ] || continue
         mkdir -p "$dir/$d"
         for t in "$REPO/$d"/* "$REPO/$d"/.[!.]*; do

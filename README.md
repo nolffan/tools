@@ -30,7 +30,16 @@ every object and library its link's response file (`<image>.rsp`) names,
 so a tool needs no object directory: it reads the link. The few listed
 under "Not adapted" at the end are NOLF1's, kept for reference.
 
-Run them from the repository root (most also work from anywhere), in the
+**Where they sit.** A project carries them as a submodule at `ext/tools/`,
+with the other submodules (`ext/rez/`, `ext/toolchains/`, `ext/ffmpeg/`)
+beside them; the older layout, `tools/` with `rez/` and `toolchains/` at the
+project's root, still works. `layout.py` (and `layout.sh` for the shell
+scripts) works out which: the project's root, and the submodules beside the
+tools. `$TOOLS_PROJECT` names the project's root when it is not the
+directory above (lithtools: its submodules are in the repository's `ext/`,
+its project in `legacy/talon/`).
+
+Run them from the project's root (most also work from anywhere), in the
 build container (`make shell`) or on a host with Python 3 and binutils.
 `build/engine.sh` and the `run_*` helpers need the container, because they
 compile.
@@ -123,7 +132,7 @@ addresses (`guides/05_exe_and_engine.md`).
 | `playtest.sh`, `playtest-*.txt` | `make test` | Runs a game directory under Xvfb in the build container, optionally driving it with an input script; reports ALIVE / EXITED / CRASHED. Scripts drive the keyboard and mouse, type into the console, the test controller (`pad`, `tap`: the modern build's `##gamepad` reading `NOLF2SRC_PADTEST`), the launcher's dialogs (`wfocus`, `wclick`, with `PLAYTEST_LAUNCH`) and a window manager (`PLAYTEST_WM`); `PLAYTEST_PREFIX` runs in a fresh Wine prefix. The scripts are NOLF2's: new game, menus, zoom, display and borderless window, console, launcher, controller. |
 | `releasesrc.py` | `build/env.sh`, `build/variant.sh` | The source the release build compiles: `src/` with every `NOLF2SRC_MODERN`/`NOLF2SRC_DEBUG` block resolved (`sync`, `outputs`, `strip`, `diff`). |
 | `mapaddr.py` | by hand | Names the function an address falls in, from a linker `.map`. |
-| `agentwt.sh` | by hand | A git worktree under `.worktrees/<name>` on branch `<name>` that can build and verify on its own: `toolchains/`, `rez/` and `out/reference/` hard-linked in (a symbolic link would not resolve in the container, which mounts the worktree alone). `add <name> [start]`, `rm <name>`, `list`. |
+| `agentwt.sh` | by hand | A git worktree under `.worktrees/<name>` on branch `<name>` that can build and verify on its own: the toolchains and rez submodules (`ext/` or the root), `ext/ffmpeg/` and `out/reference/` hard-linked in (a symbolic link would not resolve in the container, which mounts the worktree alone). `add <name> [start]`, `rm <name>`, `list`. |
 
 `build/env.sh` also gives the tools by hand, for experiments and the
 one-object loop: `run_cl` (cl 8966, or `CL_REV=<build>`), `run_link`,

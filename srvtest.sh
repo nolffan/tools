@@ -30,7 +30,7 @@
 # status 0 only for ALIVE, then not NOT STOPPED, with no message box but
 # the stop's question.
 set -u
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$(dirname "${BASH_SOURCE[0]}")/layout.sh"
 for t in wine xvfb-run xdotool convert; do
     command -v $t >/dev/null 2>&1 || { echo "srvtest.sh: no $t here -- run it in the build container (make shell)"; exit 2; }
 done

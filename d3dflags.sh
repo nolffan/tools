@@ -12,7 +12,8 @@
 # build container, after build/reference.sh:
 #   make shell, then: tools/d3dflags.sh
 set -u
-cd "$(dirname "$0")/.." || exit 1
+source "$(dirname "$0")/layout.sh"
+cd "$REPO" || exit 1
 export WINEDEBUG=-all
 source build/env.sh
 

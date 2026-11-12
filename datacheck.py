@@ -52,8 +52,8 @@ import re
 import struct
 import sys
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from layout import PROJECT as REPO  # noqa: E402
 KNOWN = "progress/data-known.txt"
 REFERENCE = "out/reference"
 

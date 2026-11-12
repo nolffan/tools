@@ -124,7 +124,7 @@ from exematch import parse_obj_masked, find  # noqa: E402
 from exedump import Pe  # noqa: E402
 from enumfuncs import Image as EnumImage, enumerate_functions  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from layout import PROJECT as REPO  # noqa: E402
 sys.path.insert(0, os.path.join(REPO, "progress"))
 sys.dont_write_bytecode = True     # no progress/__pycache__
 import targets as cfg  # noqa: E402

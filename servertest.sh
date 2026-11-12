@@ -40,7 +40,7 @@
 #   SERVERTEST_NEXTLEVEL=1  half way through, click the server's Next Level
 #                         (the level change the game's players then follow)
 set -u
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$(dirname "${BASH_SOURCE[0]}")/layout.sh"
 for t in wine xvfb-run xdotool xwd convert; do
     command -v $t >/dev/null 2>&1 || { echo "servertest.sh: no $t here -- run it in the build container (make shell)"; exit 2; }
 done

@@ -47,6 +47,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tgt as tgt_mod  # noqa: E402
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 ROOT = tgt_mod.REPO
 IMAGE = None
@@ -59,7 +60,7 @@ def measure(addr, size, obj, sym):
     if not path:
         return None
     out = subprocess.run(
-        [sys.executable, f"{ROOT}/tools/callseq.py", f"{ROOT}/{IMAGE}",
+        [sys.executable, os.path.join(HERE, "callseq.py"), f"{ROOT}/{IMAGE}",
          hex(addr), hex(addr + size), f"{ROOT}/{path}", sym],
         capture_output=True, text=True).stdout
     m = re.search(r"shipped calls\s+(\d+)\s+ours\s+(\d+)", out)
@@ -91,7 +92,7 @@ def main():
     # and silently counting it would double-count a function in two metrics.
     matched = set()
     em = subprocess.run(
-        [sys.executable, f"{ROOT}/tools/exematch.py", f"{ROOT}/{IMAGE}"] +
+        [sys.executable, os.path.join(HERE, "exematch.py"), f"{ROOT}/{IMAGE}"] +
         [os.path.join(ROOT, o) for o in sorted(OBJS.values())],
         capture_output=True, text=True).stdout
     for mm in re.finditer(r"MATCH (0x[0-9a-f]+)", em):

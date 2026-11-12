@@ -98,12 +98,13 @@ import sys
 import tarfile
 import zlib
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO, "rez", "tools"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from layout import PROJECT as REPO, sibling  # noqa: E402
+sys.path.insert(0, os.path.join(sibling("rez"), "tools"))
 from isoextract import Iso, SECTOR  # noqa: E402
 from sfxcab import find_cabinet  # noqa: E402
 
-REZ = os.path.join(REPO, "rez")
+REZ = sibling("rez")
 RETAIL = os.path.join(REZ, "games", "nolf2-eu-1.3")
 UPDATE = "patches/nolf2-update_1x3.exe"
 SCRIPTS = os.path.join(REPO, "build", "game-scripts")
