@@ -9,6 +9,14 @@ ILTMessage... -- which is the check placement-by-bytes cannot give: two
 same-shape one-line wrappers (WriteCompVector / WriteCompRotation) are told
 apart by their names and by nothing else.
 
+Caveat: VC6 does not keep declaration order for OVERLOADED virtuals. A
+name's overloads are laid out together at the first one's slot, in REVERSE
+declaration order (tron20src 4e170d2, ILTDrawPrim::DrawPrim, fixed against
+retail calls on either side of the group; a cl 8168/8966 probe agrees,
+guides/09_codegen_patterns.md). This listing is plain declaration order, so
+check any interface with overloads against retail calls before trusting its
+slots there (guides/15_sibling_games.md).
+
 Usage:
   sdkvtab.py <Class> [--inc=DIR]   print slot, name
 
