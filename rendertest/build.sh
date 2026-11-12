@@ -20,7 +20,7 @@ a=sys.stdin.read().split("call compile,",1)[1].split(",")
 print(a[1]+"|"+a[6])')
 dir=${r%%|*}; fl=${r#*|}; fl=$(echo "$fl" | sed 's#/Fo[^ ]*##')
 cd "$REPO/$dir"
-run_cl $fl /Fo$(nolf2src_wpath "$OUT/rtest.obj") /c $(nolf2src_wpath "$REPO/tools/rendertest/rtest.cpp") > "$OUT/cl.log" 2>&1 < /dev/null || true
+run_cl $fl /Fo$(nolf2src_wpath "$OUT/rtest.obj") /c $(nolf2src_wpath "$TOOLS/rendertest/rtest.cpp") > "$OUT/cl.log" 2>&1 < /dev/null || true
 tr -d '\r' < "$OUT/cl.log" | grep -v '^rtest.cpp$' || true
 { echo "$(nolf2src_wpath "$OUT/rtest.obj")"; echo "/FORCE:MULTIPLE"; echo "/out:$(nolf2src_wpath "$OUT/rtest.exe")"
   tr ' ' '\n' < "$rsp" | grep -v '^/out:\|^/map:\|^$'; } > "$OUT/link.rsp"

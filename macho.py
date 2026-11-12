@@ -17,7 +17,8 @@ inventory in progress/engine/ from it).
     tools/macho.py demangle <name>...      the demangler on its own
 
 [file] is a path, or `engine` (the default) or `server`, which resolve under
-rez/games/nolf2-mac-usa (`--root <dir>` or $NOLF2_MAC for another install).
+rez/games/nolf2-mac-usa, in the rez submodule beside the tools (`--root <dir>`
+or $NOLF2_MAC for another install).
 Install it with `rez/fetch-isos.sh nolf2-mac-usa && rez/install-games.sh
 nolf2-mac-usa` (the two USA Mac discs).
 
@@ -31,7 +32,10 @@ import re
 import struct
 import sys
 
-ROOT_DEFAULT = "rez/games/nolf2-mac-usa"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from layout import sibling  # noqa: E402
+
+ROOT_DEFAULT = os.path.join(sibling("rez"), "games", "nolf2-mac-usa")
 KNOWN = {
     "engine": "NOLF2.app/Contents/MacOS/NOLF2",
     "server": "NOLF2Srv.app/Contents/Resources/server.dll/Contents/MacOS/server",

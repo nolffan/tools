@@ -33,7 +33,7 @@ for f in src/engine/d3d/*.cpp; do
         # flag's object whenever a compile fails, which has produced a wrong
         # answer twice -- both times believed, because a number came back.
         if [ ! -f "$obj" ]; then n[$F]=-1; d[$F]=999999; continue; fi
-        out=$(python3 tools/d3dcheck.py --obj="$stem" 2>/dev/null)
+        out=$(python3 "$TOOLS/d3dcheck.py" --obj="$stem" 2>/dev/null)
         n[$F]=$(printf '%s' "$out" | head -1 | grep -oP '^\s*\K[0-9]+')
         n[$F]=${n[$F]:-0}
         # Total differing bytes, which is what breaks a tie. A file where
