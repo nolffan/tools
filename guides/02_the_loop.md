@@ -81,12 +81,12 @@ link it into what uses it as a final check.
 The retail lithshared libraries come from Monolith's *NOLF Source Code
 v1.003* release, which you supply yourself (see
 [`progress/README.md`](../../progress/README.md#the-libraries-nolf_source)).
-Start the shell with it, and it is mounted read-only with `$NOLF_SOURCE`
+Start the shell with it, and it is mounted read-only with `$NOLFSRC_SOURCE`
 pointing at it:
 
 ```sh
-make shell NOLF_SOURCE=<release>                          # on the host
-LIBS=$NOLF_SOURCE/LT2/lithshared/libs/Release             # in the shell
+make shell NOLFSRC_SOURCE=<release>                          # on the host
+LIBS=$NOLFSRC_SOURCE/LT2/lithshared/libs/Release             # in the shell
 ```
 
 The commands below unpack library members into `out/shipped/`, a scratch
@@ -115,7 +115,7 @@ directory.
    ```
    `tools/libfndiff.py` is `fndiff`'s report for one library symbol
    (`python3 tools/libfndiff.py StdLith <symbol>`, which finds the retail library
-   through `$NOLF_SOURCE`).
+   through `$NOLFSRC_SOURCE`).
 
 5. Read the `differing` list. For each, `dumpfn` both sides and compare.
    Adjust the source. Repeat until `identical : N/N`.

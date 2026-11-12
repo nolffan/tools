@@ -566,7 +566,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--jupiter", required=True,
                     help="the F.E.A.R. tree's Dev/Source (runtime/, libs/, sdk/)")
-    ap.add_argument("--root", default=os.environ.get("NOLF2_MAC", macho.ROOT_DEFAULT),
+    ap.add_argument("--root", default=os.environ.get("NOLF2SRC_MAC", macho.ROOT_DEFAULT),
                     help="the nolf2-mac-usa install")
     ap.add_argument("--out", default="progress/engine")
     a = ap.parse_args()

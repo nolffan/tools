@@ -732,10 +732,10 @@ compiler's build number; a `.lib` keeps its objects' symbol tables, so for a
 library the attribution is per object and needs no inference at all.
 `tools/compid.py` reads it out of a `.lib` or an `.obj` — and reading it back
 off something you just compiled is the quickest way to confirm a `CL_REV`
-override took effect. See [COMPILERS.md](../../toolchains/COMPILERS.md).
+override took effect. See [`progress/COMPILERS.md`](../../../progress/COMPILERS.md).
 
 
-`toolchains/COMPILERS.md` is the per-artifact map — read it before diagnosing
+`progress/COMPILERS.md` is the per-artifact map — read it before diagnosing
 any near. The summary, as the build scripts pin it:
 
 | artifact | compiler | flags | where it is set |

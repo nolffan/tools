@@ -656,15 +656,15 @@ rem this folder, the 1.3 update's data): for all users when run as an
 rem administrator, else for this Windows user. The modern build's launcher
 rem needs no registry.
 setlocal
-set "NOLF2_SELF=%~f0"
-set "NOLF2_PS1=%TEMP%\nolf2-install-%RANDOM%%RANDOM%.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=[IO.File]::ReadAllText($env:NOLF2_SELF); $m='#'+'__NOLF2_PS__'; $a=$t.IndexOf($m); $b=$t.IndexOf($m,$a+1); [IO.File]::WriteAllText($env:NOLF2_PS1,$t.Substring($a,$b-$a))"
+set "NOLF2SRC_SELF=%~f0"
+set "NOLF2SRC_PS1=%TEMP%\nolf2-install-%RANDOM%%RANDOM%.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=[IO.File]::ReadAllText($env:NOLF2SRC_SELF); $m='#'+'__NOLF2_PS__'; $a=$t.IndexOf($m); $b=$t.IndexOf($m,$a+1); [IO.File]::WriteAllText($env:NOLF2SRC_PS1,$t.Substring($a,$b-$a))"
 if errorlevel 1 goto failed
-powershell -NoProfile -ExecutionPolicy Bypass -File "%NOLF2_PS1%" "%~f0" %*
-set "NOLF2_RC=%errorlevel%"
-del "%NOLF2_PS1%" 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -File "%NOLF2SRC_PS1%" "%~f0" %*
+set "NOLF2SRC_RC=%errorlevel%"
+del "%NOLF2SRC_PS1%" 2>nul
 pause
-exit /b %NOLF2_RC%
+exit /b %NOLF2SRC_RC%
 :failed
 echo Could not start PowerShell.
 pause

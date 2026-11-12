@@ -49,7 +49,7 @@ files (the Sierra updater, web links) are not copied.
 `thirdparty` copies the licensed middleware we have no source for: Bink
 (binkw32.dll), and the Microsoft C, C++ and MFC runtime DLLs setup installs
 (MFC42.DLL, MFC42U.DLL, MSVCP60.DLL, Msvcrt.dll), which the engine and the
-launcher import. With "open" (the modern build, NOLF2_MIDDLEWARE=open) it
+launcher import. With "open" (the modern build, NOLF2SRC_MIDDLEWARE=open) it
 leaves out what `openruntime` replaces.
 
 `openruntime` is the modern build's other half of step 2: our Bink player,

@@ -31,7 +31,7 @@ library there is nothing to guess: the shipped `.lib` keeps its objects'
 symbol tables, so `libfndiff.py` matches by mangled name and cannot be wrong
 about which function you are looking at. `libfndiff.py <label> <symbol>` then
 prints the same report `fndiff` does. (The shipped `.lib`s come from the NOLF
-Source Code v1.003 release, found through `NOLF_SOURCE`, as for
+Source Code v1.003 release, found through `NOLFSRC_SOURCE`, as for
 `make progress`; see `progress/README.md`.)
 
 The library targets are therefore the cheapest nears to work, and worth doing
@@ -400,7 +400,7 @@ python3 tools/richhdr.py out/reference/lithtech.exe   # a PE image's inventory
 python3 tools/compid.py  <the shipped .lib>           # a library's exact per-object answer
 ```
 
-`toolchains/COMPILERS.md` records what each binary was built with and the
+`progress/COMPILERS.md` records what each binary was built with and the
 evidence for it.
 
 **Then sweep it per translation unit.** A mixed-revision image means some

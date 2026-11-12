@@ -60,23 +60,23 @@ You need three things.
 3. **Optionally, the source release's libraries.** The seven lithshared
    libraries are scored against the prebuilt `.lib`s from Monolith's *NOLF
    Source Code v1.003* release, which is not in the repository. Point
-   `NOLF_SOURCE` at your extracted copy (the directory holding `LT2/`). They
+   `NOLFSRC_SOURCE` at your extracted copy (the directory holding `LT2/`). They
    are checked against `progress/shipped-libs.sha256`, and a mismatch is an
    error, not a skip: a different library would be the wrong ground truth.
-   Without `NOLF_SOURCE` everything else is still scored and checked.
+   Without `NOLFSRC_SOURCE` everything else is still scored and checked.
 
 ## Checking: `make progress`
 
 ```sh
 make                                   # build what you changed
 make progress                          # score it, hold it to the baseline
-make progress NOLF_SOURCE=~/nolfsrc    # the same, with the libraries
+make progress NOLFSRC_SOURCE=~/nolfsrc    # the same, with the libraries
 ```
 
 `make progress` runs `build/progress.sh check` in the build container:
 `progress.py`, then `ratchet.py check`. It prints a line per target as it
 places functions, then the score of the run, then the run against the
-baseline and the verdict (trimmed; a run without `NOLF_SOURCE`):
+baseline and the verdict (trimmed; a run without `NOLFSRC_SOURCE`):
 
 ```
 target              ident  near  small  attem  todo  funcs  unwr  unpl   bytes id  bytes tot      %
@@ -121,7 +121,7 @@ function is identical -- the finish line.
 When a run is better than the baseline, lock it in:
 
 ```sh
-make progress-update NOLF_SOURCE=~/nolfsrc
+make progress-update NOLFSRC_SOURCE=~/nolfsrc
 git add progress/identical.txt progress/summary.json progress/data-known.txt README.md
 ```
 
@@ -134,7 +134,7 @@ shows which change made which function identical.
 It refuses two kinds of run:
 
 * **A run without the libraries.** The baseline covers every target, so it
-  needs `NOLF_SOURCE`.
+  needs `NOLFSRC_SOURCE`.
 * **A run that lost a recorded function.** Fix the loss, or -- when the change
   rightly gives the function up (it was identical by coincidence, say, and
   the right source compiles differently) -- record it with
@@ -236,7 +236,7 @@ python3 tools/progress.py --nears=server.dll  # 3. pick work (in make shell)
 #    ... write source; build/engine.sh server-one <file> <symbol>; fndiff ...
 make                                          # 4. rebuild everything
 make progress                                 # 5. no regressions, new functions reported
-make progress-update NOLF_SOURCE=~/nolfsrc    # 6. record them
+make progress-update NOLFSRC_SOURCE=~/nolfsrc    # 6. record them
 git add -A src progress README.md && git commit
 ```
 

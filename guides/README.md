@@ -46,7 +46,7 @@ declared rather than filled in.
 Three companion documents sit outside this directory and are worth reading
 once: [`BUILDING.md`](../../BUILDING.md) explains the build and how to run parts
 of it, [`tools/README.md`](../README.md) what each tool does and when
-you reach for it, and [`toolchains/COMPILERS.md`](../../toolchains/COMPILERS.md)
+you reach for it, and [`progress/COMPILERS.md`](../../../progress/COMPILERS.md)
 which compiler revision built which binary.
 
 ## Start here
@@ -150,7 +150,7 @@ The flags decide everything before you start:
 
 The build scripts already use the right compiler and flags for every file
 (`build/build.mk` lists them); the evidence for each choice is in
-[`toolchains/COMPILERS.md`](../../toolchains/COMPILERS.md). Check it before
+[`progress/COMPILERS.md`](../../../progress/COMPILERS.md). Check it before
 diagnosing a near.
 
 ## Never change what the retail code does

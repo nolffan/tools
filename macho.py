@@ -18,7 +18,7 @@ inventory in progress/engine/ from it).
 
 [file] is a path, or `engine` (the default) or `server`, which resolve under
 rez/games/nolf2-mac-usa, in the rez submodule beside the tools (`--root <dir>`
-or $NOLF2_MAC for another install).
+or $NOLF2SRC_MAC for another install).
 Install it with `rez/fetch-isos.sh nolf2-mac-usa && rez/install-games.sh
 nolf2-mac-usa` (the two USA Mac discs).
 
@@ -51,7 +51,7 @@ S_TYPE_MASK, S_SYMBOL_STUBS = 0xff, 0x8
 def resolve(arg, root=None):
     """A file argument: a path, or `engine` / `server` under the Mac install."""
     if arg in KNOWN:
-        root = root or os.environ.get("NOLF2_MAC") or ROOT_DEFAULT
+        root = root or os.environ.get("NOLF2SRC_MAC") or ROOT_DEFAULT
         return os.path.join(root, KNOWN[arg])
     return arg
 
