@@ -263,6 +263,97 @@ reconstructs the server side that way. Find the object's name in the CRT
 `__xc` table (here 0x004a7000..0x004a70fc): the table's slot ORDER is
 declaration order.
 
+## Running parallel waves
+
+Ground rule 4 keeps two workers from overwriting each other's objects. A
+wave -- many agents at once, each taking a share of a DLL's unwritten
+functions -- needs more than that: a partition nobody can argue about, a
+rule for who owns the shared files, and one person who merges. The model is
+tron20src's unwritten-functions wave: ten band agents, each in its own
+worktree, +721 identical functions net once merged (758 new, 37 small stubs
+re-paired among twins; tron20src 6a0b3f0). The working files it used live in
+tron20src's `out/work/`, which is gitignored: they are local to that
+checkout, not in its history and not part of `tools/`, so recreate them for
+a new wave rather than looking for them in git.
+
+**Partition by retail address band.** Cut each DLL's code into a few
+contiguous address ranges and give each agent one or more. For each band,
+filter the scoreboard's unwritten rows (`out/progress/functions.csv`, status
+`todo`) into a `todo-<band>.txt` of `address size` lines with a header
+naming the range, e.g.
+
+    # Object.lto 0x10001000..0x1001a000: 110 unwritten functions
+    0x10001250 35
+    0x10001290 745
+
+Retail translation units are contiguous and their functions are in source
+order, so ownership follows: **an agent owns a TU if the TU's FIRST
+function lies in its band**, even when the TU runs past the band's end.
+That settles every boundary case without a conversation.
+
+**Rules for the shared files**, written into the brief:
+
+- Shared headers are ADD-only: constants, a declaration, a member at the end
+  only where retail's layout shows it. Never reorder or remove in a class
+  someone else owns, and list what you added in your report.
+- New files go into the project with tron20src's `out/work/dspadd.py`
+  (a local helper, not in `tools/`), keeping the group alphabetical, so
+  that `.dsp` additions conflict as little as they can.
+- Workers do not run `make progress` and do not merge. The coordinator alone
+  merges the branches, resolves the `.dsp` conflicts and runs `make progress`
+  once for the wave.
+
+**A brief every agent reads first** (tron20src's was `out/work/AGENT_BRIEF.md`):
+the project and its targets; where the source comes from; the fast loop
+(one object, then the function diff); the rules above; the **known compiler
+facts** the agents would otherwise each rediscover (for Tron: VC6 lays a
+name's virtual overloads out in reverse declaration order, identical code
+folds, an in-class member function is inline); the **known blockers** to
+leave near rather than fight (a vtable known to be short, a class of the
+wrong size, enums that differ); and **"already solved -- grep master
+first"**: the classes and libraries some earlier worker has written, with
+where they live.
+
+### What went wrong, and what to do about it
+
+Two problems cost the tron20src wave most of its merge time.
+
+- **Workers duplicated shared dependencies.** A class two bands both need
+  gets written twice. Tron's `CLIENTFXUSERCREATESTRUCT` was added by two
+  workers for two different users (e18c7f2), GameSpy's `md5c.c` and
+  `nonport.c` arrived twice in two directories (4d3f4c2), and
+  `CSubroutineDataMgr` came once as the whole class and once as a partial
+  header with a second global (eff0766). Each needed a dedup commit after
+  the merge, and the partial copy's user had to be moved onto the whole one.
+- **Nearly every merge conflicted on `docs/RETAIL_BUGS.md`.** Every worker
+  that found a retail bug appended to the same section of the same file:
+  four of the wave's merges conflicted there and nowhere else (ccc5235,
+  8df0099, d07c0be, 8f64ca5), two more on a `.dsp`, and the merged entries
+  then needed a commit of their own to separate them (ba62c68).
+
+Remedies. Only the second has been done so far (after that wave, for the
+next one); the others are recommended and **not yet tried**:
+
+- *(Not yet tried.)* Pre-assign the classes two bands will need. Before the
+  wave, list the shared classes the bands' TUs call into (their RTTI, the
+  calls the retail dumps name) and give each to one band, or write them
+  first.
+- Grow the "already solved" list between waves, and better between merges,
+  so a late worker greps for what an early one wrote. The Tron brief's list
+  now names exactly the three duplicated above.
+- *(Not yet tried.)* Make `RETAIL_BUGS.md` append-only and mark it
+  `docs/RETAIL_BUGS.md merge=union` in `.gitattributes`, so concurrent
+  appends merge without a conflict; union merges can interleave or
+  duplicate lines, so the coordinator still reads the merged file.
+- *(Not yet tried.)* Or have each worker write its bugs to its own file
+  (`docs/retail-bugs/<band>.md`) and fold them into `RETAIL_BUGS.md` in the
+  coordinator's merge commit.
+
+The same partition worked for a tool: lithtools' AvP2 DEdit was brought
+back to its 2001 source in nine parts by image range, each part owning the
+headers of its modules, in one round of nine agents (2,499 to 3,855
+identical; lithtools `legacy/talon/docs/PLAN.md`, section 3).
+
 ## Tools
 
     python3 tools/exedump.py out/reference/lithtech.exe <start_va> <end_va>
