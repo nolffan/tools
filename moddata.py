@@ -34,17 +34,28 @@ applies it to the data the build already took from the retail game:
 
 The results are written into the game directory's custom/ rez directory,
 which the engine searches after the four .rez archives, so they override the
-retail copies (gamedir/ recipes: into the game directory). The retail file a
-patch applies to is the one the game itself would load: the last archive in
-nolfcmds.txt's -rez order that holds it. custom/MODERN-DATA.txt lists what
-was written; a file a previous run wrote and this one did not is removed (a
-game-directory file is put back to its .retail original).
+retail copies (gamedir/ recipes: into the game directory); or, with
+--out <dir>, into <dir>, which the project then packs into an archive of its
+own. The retail file a patch applies to is the one the game itself would
+load: the last archive in nolfcmds.txt's -rez order that holds it, leaving
+out the archives --skip names (the project's own, which hold earlier runs'
+results). MODERN-DATA.txt (in the output directory, or --list <file>) lists
+what was written; a file a previous run wrote and this one did not is
+removed (a game-directory file is put back to its .retail original).
 
   tools/moddata.py apply <gamedir> [recipes-dir]    (build/variant.sh runs it)
   tools/moddata.py show  <gamedir> <path>           print a file as the game
                                                     sees it (to diff against)
   tools/moddata.py diff  <gamedir> <path> <edited>  write a recipe from an
                                                     edited copy
+
+  options (before or after the arguments):
+    --out <dir>      apply: write the archive-bound files into <dir>, not
+                     <gamedir>/custom/
+    --list <file>    apply: the list of what was written (default
+                     <out>/MODERN-DATA.txt)
+    --skip <name>    leave this archive of nolfcmds.txt out of the stack
+                     (repeatable)
 
 A patch must apply exactly (context lines included), or the build fails:
 data that drifted from what a patch expects means the patch is wrong.
@@ -61,12 +72,16 @@ from rezextract import Rez  # noqa: E402
 LIST = "MODERN-DATA.txt"
 
 
-def rez_stack(gamedir):
-    """The game's .rez archives in load order, from nolfcmds.txt."""
+def rez_stack(gamedir, skip=()):
+    """The game's .rez archives in load order, from nolfcmds.txt, less the
+    ones named in `skip`."""
     cmds = open(os.path.join(gamedir, "nolfcmds.txt"), errors="replace").read()
+    skip = {s.lower() for s in skip}
     stack = []
     for name in re.findall(r"-rez\s+(\S+)", cmds):
         p = os.path.join(gamedir, name)
+        if name.lower() in skip:
+            continue
         if name.lower().endswith(".rez") and os.path.isfile(p):
             stack.append(p)
     return stack
@@ -75,10 +90,10 @@ def rez_stack(gamedir):
 class Data:
     """The game's data as the engine sees it, before our edits."""
 
-    def __init__(self, gamedir):
+    def __init__(self, gamedir, skip=()):
         self.index = {}                 # lower-case path -> (rez, pos, size, path)
         self.rez = {}
-        for p in rez_stack(gamedir):    # later archives override earlier ones
+        for p in rez_stack(gamedir, skip):   # later archives override earlier ones
             r = self.rez[p] = Rez(p)
             for path, pos, size in r.walk():
                 self.index[path.lower()] = (p, pos, size, path)
@@ -230,9 +245,10 @@ def gamedir_retail(gamedir, path):
     return open(keep, "rb").read()
 
 
-def cmd_apply(gamedir, rdir):
-    data = Data(gamedir)
-    custom = os.path.join(gamedir, "custom")
+def cmd_apply(gamedir, rdir, out=None, listing=None, skip=()):
+    data = Data(gamedir, skip)
+    custom = out or os.path.join(gamedir, "custom")
+    shown = os.path.relpath(custom, gamedir) + "/" if out else "custom/"
     written = []
     for target, path, kind, recipe in recipes(rdir):
         if kind == "file":
@@ -270,9 +286,9 @@ def cmd_apply(gamedir, rdir):
         open(dest, "wb").write(content)
         entry = ("gamedir:" if target == "gamedir" else "") + real
         written.append(entry)
-        print(f"   {'' if target == 'gamedir' else 'custom/'}{real}  <- {os.path.relpath(recipe)}")
+        print(f"   {'' if target == 'gamedir' else shown}{real}  <- {os.path.relpath(recipe)}")
     # undo what an earlier run wrote and this one did not
-    lp = os.path.join(custom, LIST)
+    lp = listing or os.path.join(custom, LIST)
     os.makedirs(custom, exist_ok=True)
     if os.path.exists(lp):
         for old in open(lp).read().split("\n"):
@@ -291,15 +307,15 @@ def cmd_apply(gamedir, rdir):
     print(f"   {len(written)} data file(s) from {os.path.relpath(rdir)}")
 
 
-def cmd_show(gamedir, path):
-    raw, real = Data(gamedir).read(path)
+def cmd_show(gamedir, path, skip=()):
+    raw, real = Data(gamedir, skip).read(path)
     if raw is None:
         sys.exit(f"moddata: {path}: not in the game's rez archives")
     sys.stdout.buffer.write(raw)
 
 
-def cmd_diff(gamedir, path, edited):
-    raw, real = Data(gamedir).read(path)
+def cmd_diff(gamedir, path, edited, skip=()):
+    raw, real = Data(gamedir, skip).read(path)
     if raw is None:
         sys.exit(f"moddata: {path}: not in the game's rez archives")
     a = raw.decode("latin-1").replace("\r\n", "\n").split("\n")
@@ -309,14 +325,30 @@ def cmd_diff(gamedir, path, edited):
 
 
 def main():
-    a = sys.argv[1:]
-    if len(a) >= 2 and a[0] == "apply":
+    a, opt, skip = [], {}, []
+    args = sys.argv[1:]
+    while args:
+        x = args.pop(0)
+        if x in ("--out", "--list", "--skip"):
+            if not args:
+                sys.exit(f"moddata: {x} needs a value")
+            v = args.pop(0)
+            if x == "--skip":
+                skip.append(v)
+            else:
+                opt[x[2:]] = v
+        else:
+            a.append(x)
+    if opt and (not a or a[0] != "apply"):
+        sys.exit("moddata: --out and --list are for apply")
+    if 2 <= len(a) <= 3 and a[0] == "apply":
         here = layout.PROJECT
-        cmd_apply(a[1], a[2] if len(a) > 2 else os.path.join(here, "src/modern/data"))
+        cmd_apply(a[1], a[2] if len(a) > 2 else os.path.join(here, "src/modern/data"),
+                  opt.get("out"), opt.get("list"), skip)
     elif len(a) == 3 and a[0] == "show":
-        cmd_show(a[1], a[2])
+        cmd_show(a[1], a[2], skip)
     elif len(a) == 4 and a[0] == "diff":
-        cmd_diff(a[1], a[2], a[3])
+        cmd_diff(a[1], a[2], a[3], skip)
     else:
         sys.exit(__doc__)
 
