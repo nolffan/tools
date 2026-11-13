@@ -56,6 +56,15 @@ leaves out what `openruntime` replaces.
 binkw32.dll, which build/ext.sh built from src/modern/binkw32/ and
 ext/ffmpeg into <extdir>, in place of RAD's (MANIFEST.txt origin `EXT`).
 The Microsoft runtime DLLs stay the retail ones in both builds.
+A layout that sets DIRECTMUSIC_MANIFESTS also gets Microsoft's DirectMusic
+there: the nine DLLs of DirectX 9.0c's, from
+ext/toolchains/directmusic-5.3.1.904/ (checked against its SHA256SUMS), as
+ms_<name>.dll, and each of the layout's registration-free COM manifests
+beside the engine, which map DirectMusic's classes to those files -- so the
+music plays under Wine and Proton, whose own DirectMusic cannot play it,
+with no prefix set up (THIRD-PARTY rows; nolfsrc's
+src/modern/directmusic/README.md). Without that directory the build warns
+and installs neither, removing an earlier build's.
 
 No engine binary is copied: Lithtech.exe, server.dll, snddrv.dll,
 ServerDir.dll and ltmsg.dll are built from our source (src/Engine/,
@@ -136,13 +145,23 @@ OPEN_RUNTIME = [
 ]
 
 
+# Microsoft's DirectMusic for the modern build's game directory (`openruntime`):
+# [(our manifest, its installed name)], e.g.
+# [("src/modern/directmusic/lithtech.exe.manifest", "lithtech.exe.manifest")]
+# (paths from the repository root, where the build runs this). Empty: none.
+DIRECTMUSIC_MANIFESTS = []
+DIRECTMUSIC_SRC = Path("ext") / "toolchains" / "directmusic-5.3.1.904"
+DIRECTMUSIC = ["dmband.dll", "dmcompos.dll", "dmime.dll", "dmloader.dll", "dmscript.dll",
+               "dmstyle.dll", "dmsynth.dll", "dmusic.dll", "dswave.dll"]
+
+
 # A project other than NOLF2 describes its own retail game in build/retail.py
 # (beside the build/retail.sh that installs it), a plain Python file that
 # sets any of the names above: REZ, DATA_DIRS, RETAIL_COPIES,
 # THIRD_PARTY_NAMES, BUILT_ENGINE, REFERENCE, REFERENCE_REZ, REFERENCE_GAME,
-# OPEN_RUNTIME. An entry of REFERENCE_GAME may name its own archive as a
-# third item, (name in the archive, our name, archive), where the retail
-# game keeps its game DLLs in more than one. RETAIL_LAYOUT names the file
+# OPEN_RUNTIME, DIRECTMUSIC_MANIFESTS. An entry of REFERENCE_GAME may name
+# its own archive as a third item, (name in the archive, our name,
+# archive), where the retail game keeps its game DLLs in more than one. RETAIL_LAYOUT names the file
 # instead; without either, the values above (NOLF2's) stand.
 def _load_layout():
     path = os.environ.get("RETAIL_LAYOUT") or os.path.join("build", "retail.py")
@@ -152,7 +171,8 @@ def _load_layout():
     with open(path) as f:
         exec(compile(f.read(), path, "exec"), ns)
     for k in ("REZ", "DATA_DIRS", "RETAIL_COPIES", "THIRD_PARTY_NAMES", "BUILT_ENGINE",
-              "REFERENCE", "REFERENCE_REZ", "REFERENCE_GAME", "OPEN_RUNTIME"):
+              "REFERENCE", "REFERENCE_REZ", "REFERENCE_GAME", "OPEN_RUNTIME",
+              "DIRECTMUSIC_MANIFESTS"):
         if k in ns:
             globals()[k] = ns[k]
 
@@ -323,8 +343,49 @@ def cmd_openruntime(extdir, gamedir):
         shutil.copyfile(Path(extdir) / name, gamedir / name)
         man.add(name, f"EXT {origin} (build/ext.sh)")
         print(f"   {name}  <-  {origin}")
+    ndm = install_directmusic(gamedir, man) if DIRECTMUSIC_MANIFESTS else 0
     man.save()
-    print(f"== open runtime: {len(OPEN_RUNTIME)} file(s) (Bink on FFmpeg)")
+    print(f"== open runtime: {len(OPEN_RUNTIME)} file(s) (Bink on FFmpeg)"
+          + (f", and {ndm} for Microsoft's DirectMusic" if ndm else ""))
+
+
+def install_directmusic(gamedir, man):
+    """Microsoft's DirectMusic DLLs, as ms_<name>.dll, and the layout's
+    manifests into the game directory; the number of files. Without
+    DIRECTMUSIC_SRC, none, and an earlier build's are removed (a manifest
+    naming missing files would break DirectMusic on Windows)."""
+    import hashlib
+    import xml.dom.minidom
+    targets = ["ms_" + n for n in DIRECTMUSIC] + [dest for _src, dest in DIRECTMUSIC_MANIFESTS]
+    sums = DIRECTMUSIC_SRC / "SHA256SUMS"
+    if not sums.exists():
+        for t in targets:
+            if (gamedir / t).exists():
+                (gamedir / t).unlink()
+                print(f"   removed {t}")
+            man.rows.pop(t, None)
+        print(f"   WARNING: no {DIRECTMUSIC_SRC}/ -- no DirectMusic in the game directory, "
+              "so no music under Wine or Proton unless the prefix has Microsoft's")
+        return 0
+    want = dict(reversed(line.split()) for line in sums.read_text().splitlines() if line.strip())
+    for n in DIRECTMUSIC:
+        got = hashlib.sha256((DIRECTMUSIC_SRC / n).read_bytes()).hexdigest()
+        if want.get(n) != got:
+            sys.exit(f"{DIRECTMUSIC_SRC / n}: SHA-256 {got} is not the one SHA256SUMS pins")
+        shutil.copyfile(DIRECTMUSIC_SRC / n, gamedir / ("ms_" + n))
+        man.add("ms_" + n, f"THIRD-PARTY Microsoft DirectMusic, {DIRECTMUSIC_SRC}/{n}")
+        print(f"   ms_{n}  <-  {DIRECTMUSIC_SRC}/{n}")
+    for src, dest in DIRECTMUSIC_MANIFESTS:
+        # Windows will not start an executable whose manifest is not
+        # well-formed XML (Wine is more forgiving)
+        try:
+            xml.dom.minidom.parse(src)
+        except Exception as e:
+            sys.exit(f"{src}: not well-formed XML ({e})")
+        shutil.copyfile(src, gamedir / dest)
+        man.add(dest, f"ours {src}")
+        print(f"   {dest}  <-  {src}")
+    return len(targets)
 
 
 def cmd_reference(retaildir, refdir):
