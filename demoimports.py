@@ -25,12 +25,21 @@ sha256 of out/reference/Lithtech.exe, or by --game=<name>:
           `.rjes` (0x59c000..0x638000) followed by one junk byte, the six
           bytes of the `ff 15` they replace; `.text` 0x536000..0x53b000
           encrypted.
+  tron2   Tron 2.0 1.030 (Update 2, 2003-10) and Monolith's developer
+          build of 2003-08-05 (rez/'s installed devtools/tron2-devbuild:
+          unprotected, VC6 SP5 8966 against retail's 8168, two months
+          older): 1,372 sites redirected to 24 slots in `.khpb`
+          (0x635000..0x6e9000), and 91 more rewritten as a direct call
+          into one of three dispatchers in `.ifkui` (0x60fd00, 0x60fec0,
+          0x60ff40) plus a junk byte, as in CJ's; `.text` 0x572000..
+          0x577000 encrypted.
 
   demoimports.py extract   unpack the demo's engine into out/<demo>/
                            (nolf2: from rez/'s artifact, rez/assemble-
                            artifacts.sh demos first; cjack: from
                            rez/demos/), with rez/tools/sfxcab.py and
-                           rez/tools/unshield
+                           rez/tools/unshield; tron2: copied from rez/'s
+                           installed developer build
   demoimports.py map [--csv=<csv>]
                            pair every redirected retail call site with the
                            demo's instruction and name the import it calls;
@@ -121,6 +130,19 @@ PROFILES = {
         enc=(0x536000, 0x53B000),
         orig_impdir=0x566058,
         csv="progress/engine/Lithtech-iat-calls.csv"),
+    "tron2": dict(
+        retail_sha256="a10677b1d1121e8ea2859e7b2fc9a12d1e544acc9ce0a61ae822ffad9e8695b4",
+        installed="installed/devtools/tron2-devbuild",
+        outdir="out/devbuild",
+        demo_sha256={
+            "Lithtech.exe": "3d47ed0e16a5e4ab7579336a3b417ddd32c50932a021274a0cfd7dabc8fb9c89",
+        },
+        slots=(0x635000, 0x6E9000),     # SecuROM's slots: all of .khpb
+        stubs=(0x60F000, 0x610000),     # e8 + junk byte into .ifkui's dispatchers
+        enc=(0x572000, 0x577000),
+        max_shift=0x10000,              # a build two months older: retail = dev - 0x2000..0x7000
+        orig_impdir=0x5A9428,
+        csv="progress/engine/Lithtech-iat-calls.csv"),
 }
 
 
@@ -141,7 +163,7 @@ def pick_profile(args):
 
 def use_profile(name):
     """Set the module's constants from a profile."""
-    global GAME, P, OUTDIR, DEMO, CSV, SLOTS, ENC, ORIG_IMPDIR, DEMO_SHA256, STUBS
+    global GAME, P, OUTDIR, DEMO, CSV, SLOTS, ENC, ORIG_IMPDIR, DEMO_SHA256, STUBS, MAX_SHIFT
     GAME, P = name, PROFILES[name]
     OUTDIR = os.path.join(ROOT, P["outdir"])
     DEMO = os.path.join(OUTDIR, "Lithtech.exe")
@@ -149,6 +171,7 @@ def use_profile(name):
     SLOTS, ENC, ORIG_IMPDIR = P["slots"], P["enc"], P["orig_impdir"]
     DEMO_SHA256 = P["demo_sha256"]
     STUBS = P.get("stubs")
+    MAX_SHIFT = P.get("max_shift", 0x400)
 
 
 def is_slot(v):
@@ -229,6 +252,18 @@ def need_demo():
 # ---------------------------------------------------------------- extract
 
 def cmd_extract(args):
+    if "installed" in P:                # already unpacked by rez/'s install
+        os.makedirs(OUTDIR, exist_ok=True)
+        for name, want in DEMO_SHA256.items():
+            src = os.path.join(sibling("rez"), P["installed"], name)
+            if not os.path.exists(src):
+                sys.exit("demoimports: %s is missing (rez/)" % os.path.join(P["installed"], name))
+            got = sha(src)
+            if got != want:
+                sys.exit("demoimports: %s has sha256 %s, expected %s" % (name, got, want))
+            shutil.copyfile(src, os.path.join(OUTDIR, name))
+            print(os.path.relpath(os.path.join(OUTDIR, name), ROOT))
+        return
     unshield = os.path.join(sibling("rez"), "tools/unshield/unshield")
     if not os.access(unshield, os.X_OK):
         sys.exit("demoimports: rez/tools/unshield/unshield is not built -- `make -C rez/tools/unshield`")
@@ -572,7 +607,7 @@ def segments(ret, demo, rows):
             i = bisect.bisect_left(keys, c)
             near = [c - pairs[j][1] for j in (i - 1, i) if 0 <= j < len(pairs)]
             found = [demo_call(dc) for dc in near]
-            found = [dt for dt in found if dt is not None and abs(t - dt) < 0x400]
+            found = [dt for dt in found if dt is not None and abs(t - dt) < MAX_SHIFT]
             if not found:
                 co = ret.off(c)
                 for pat, rel in ((ret.d[co - 12:co + 1], 12), (ret.d[co + 5:co + 17], -5)):
@@ -583,7 +618,7 @@ def segments(ret, demo, rows):
                         k = dcode.find(pat, k + 1)
                     if len(hits) == 1:          # only a unique recurrence
                         dt = demo_call(hits[0])
-                        if dt is not None and abs(t - dt) < 0x400:
+                        if dt is not None and abs(t - dt) < MAX_SHIFT:
                             found = [dt]
                             break
             if found:
@@ -661,6 +696,7 @@ def fix_branches(img, ret, demo, segs, rows):
         return dt + best[1] if best else None
 
     tmp = os.path.join(OUTDIR, "work", "filled.bin")
+    os.makedirs(os.path.dirname(tmp), exist_ok=True)
     fixed = unknown = 0
     for lo, hi, sh in segs:
         a = ret.off(lo)
