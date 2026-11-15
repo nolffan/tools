@@ -10,8 +10,8 @@ original toolchain compiles to **byte-identical machine code**.
 
 This is not a rewrite or a port. The goal is preservation: source that
 reproduces the exact bytes Monolith shipped, verified function by function.
-How far that has got is the table in the top-level [README](../../README.md#progress);
-`make progress` re-measures it (see [`progress/README.md`](../../progress/README.md)).
+How far that has got is the table in [`progress/README.md`](../../progress/README.md),
+which also explains the scoring; `make progress` re-measures it.
 
 ## The loop
 
