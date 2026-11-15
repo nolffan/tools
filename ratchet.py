@@ -53,6 +53,9 @@ COVERAGE = ("unwritten", "unplaced")
 sys.path.insert(0, os.path.join(REPO, "progress"))
 sys.dont_write_bytecode = True     # no progress/__pycache__
 import targets as cfg  # noqa: E402
+# The file holding the progress table: progress/targets.py's README, else
+# the project's README.md.
+README = getattr(cfg, "README", README)
 
 # The README's rows, in progress/targets.py's order: (label, what it is, the
 # targets it adds up). Libraries scored on their own (cfg.LIBS) share one
