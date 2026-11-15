@@ -53,6 +53,9 @@
 #   shot <name>           screenshot the game window -> shots/NN-<name>.png
 #   screen <name>         screenshot the whole display (the window on it)
 #   focus                 re-focus the game window
+#   blur / wmfocus        alt-tab away (the focus to an xlogo) / back (as a
+#                         window manager gives it back: WM_TAKE_FOCUS, which
+#                         Wine waits for; works without PLAYTEST_WM)
 #   minimize / restore    iconify the game window (it loses the focus) /
 #                         map and activate it again (a window manager's
 #                         job: PLAYTEST_WM)
@@ -240,6 +243,49 @@ if [ -f script.txt ]; then
         WX=${X:-0}; WY=${Y:-0}; WW=${WIDTH:-1024}; WH=${HEIGHT:-768}
     }
     focuswin() { [ -n "$WIN" ] && xdotool windowfocus "$WIN" 2>/dev/null; }
+    # takefocus <xwin>: a window manager's "this window now" -- map it, give
+    # it the input focus, send WM_PROTOCOLS/WM_TAKE_FOCUS. Built on first
+    # use with gcc against libX11, declaring the few calls it makes (no X
+    # headers needed; x86-64 layout).
+    build_takefocus() {
+        cat > takefocus.c <<'TAKEFOCUS'
+#include <stdlib.h>
+#include <string.h>
+typedef unsigned long Atom, Window, Time;
+typedef struct _XDisplay Display;
+typedef struct { int type; unsigned long serial; int send_event; Display *display;
+                 Window window; Atom message_type; int format; long l[5]; } XClientMessageEvent;
+typedef union { int type; XClientMessageEvent xclient; long pad[24]; } XEvent;
+extern Display *XOpenDisplay(const char *);
+extern Atom XInternAtom(Display *, const char *, int);
+extern int XSendEvent(Display *, Window, int, long, XEvent *);
+extern int XSetInputFocus(Display *, Window, int, Time);
+extern int XMapRaised(Display *, Window);
+extern int XSync(Display *, int);
+extern int XCloseDisplay(Display *);
+int main(int argc, char **argv)
+{
+    Display *d = XOpenDisplay(NULL);
+    Window w;
+    XEvent e;
+    if (!d || argc < 2) return 1;
+    w = strtoul(argv[1], NULL, 0);
+    XMapRaised(d, w);
+    XSetInputFocus(d, w, 1, 0);
+    memset(&e, 0, sizeof e);
+    e.xclient.type = 33;
+    e.xclient.window = w;
+    e.xclient.message_type = XInternAtom(d, "WM_PROTOCOLS", 0);
+    e.xclient.format = 32;
+    e.xclient.l[0] = XInternAtom(d, "WM_TAKE_FOCUS", 0);
+    XSendEvent(d, w, 0, 0, &e);
+    XSync(d, 0);
+    XCloseDisplay(d);
+    return 0;
+}
+TAKEFOCUS
+        gcc -O1 -o takefocus takefocus.c -l:libX11.so.6 2>> script.log
+    }
     # a point of the menus' 640x480 page -> the pointer (see mmove)
     pagemove() {
         local p
@@ -317,6 +363,19 @@ if [ -f script.txt ]; then
             shot)  N=$((N+1)); f=$(printf 'shots/%02d-%s.png' $N "$1"); grab "$f"; log "  -> $f" ;;
             screen) N=$((N+1)); f=$(printf 'shots/%02d-%s.png' $N "$1"); xwd -root -silent | convert xwd:- "$f"; log "  -> $f (the display)" ;;
             focus) focuswin ;;
+            blur)  # alt-tab away: the focus to another X client (an xlogo)
+                   if [ -z "${BLURWIN:-}" ]; then
+                       xlogo -geometry 64x64+0+0 > /dev/null 2>&1 &
+                       sleep 1
+                       BLURWIN=$(xdotool search --onlyvisible --name '^xlogo$' 2>/dev/null | tail -1)
+                   fi
+                   [ -n "$BLURWIN" ] && xdotool windowfocus "$BLURWIN" 2>/dev/null
+                   log "  focus to ${BLURWIN:-nothing (no xlogo)}" ;;
+            wmfocus) # alt-tab back: what a window manager does (map, focus,
+                   # WM_TAKE_FOCUS), which Wine waits for to activate a window
+                   [ -x ./takefocus ] || build_takefocus
+                   if [ -x ./takefocus ] && [ -n "$WIN" ]; then ./takefocus "$WIN"; log "  WM_TAKE_FOCUS to $WIN"
+                   else log "  wmfocus: no takefocus (gcc, libX11)"; fi ;;
             minimize) [ -n "$WIN" ] && xdotool windowminimize "$WIN" 2>/dev/null ;;
             restore) [ -n "$WIN" ] && { xdotool windowmap "$WIN" 2>/dev/null; xdotool windowactivate "$WIN" 2>/dev/null || focuswin; } ;;
             mmove) pagemove "$1" "$2" ;;
