@@ -522,7 +522,14 @@ def main():
             tn = RT.get(typ, typ if isinstance(typ, str) else "%d" % typ)
             fn = "%s_%s_%s.bin" % (stem, tn, nm)
             open(os.path.join(absres, fn), "wb").write(data)
-            sect(str(tn), '%-23s %s DISCARDABLE "%s\\\\%s"' % (nm, rcstr(typ) if isinstance(typ, str) else typ, resdir, fn))
+            # rc.exe keeps the quotes of a quoted type in the type's name
+            # ("TEXT" makes a type named "TEXT" with quotes): write a name
+            # that is a plain word without quotes.
+            if isinstance(typ, str):
+                tw = typ if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", typ) else rcstr(typ)
+            else:
+                tw = typ
+            sect(str(tn), '%-23s %s DISCARDABLE "%s\\\\%s"' % (nm, tw, resdir, fn))
 
     from_lang = {0x409: ("LANG_ENGLISH", "SUBLANG_ENGLISH_US", 1252),
                  0x809: ("LANG_ENGLISH", "SUBLANG_ENGLISH_UK", 1252)}
