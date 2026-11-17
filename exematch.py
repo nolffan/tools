@@ -19,12 +19,17 @@ import tempfile, glob, os  # noqa: E402
 from libextract import extract  # noqa: E402
 
 
-def parse_obj_masked(data, kinds=None):
+def parse_obj_masked(data, kinds=None, targets=None):
     """Like objdiff.parse_obj but returns (code, maskset) per function.
 
     kinds, a dict, is filled with each function's relocations as
     {name: {offset: COFF relocation type}} (6 DIR32, 7 DIR32NB, 0x14
-    REL32, ...), for a caller that has to know what each masked dword is."""
+    REL32, ...), for a caller that has to know what each masked dword is.
+    targets, a dict, is filled with what each relocation names, as
+    {name: {offset: (symbol, the dword in the code)}}: for a DIR32 the
+    dword is the addend, so (`??_C@_05...`, 0) is the start of that
+    string literal and not an address in another symbol that only
+    happens to be the same."""
     if len(data) < 20:
         return {}
     machine, nsec, _ts, symoff, nsyms, optsz, _ch = struct.unpack_from("<HHIIIHH", data, 0)
@@ -47,6 +52,7 @@ def parse_obj_masked(data, kinds=None):
         secs.append((rawsz, rawp, relp, nrel, flags))
 
     syms = []
+    by_index = {}
     i = 0
     while i < nsyms:
         e = symoff + i * 18
@@ -54,6 +60,7 @@ def parse_obj_masked(data, kinds=None):
         name = symname(raw[:8])
         value, secnum, typ, storage, naux = struct.unpack_from("<IhHBB", raw, 8)
         syms.append((name, value, secnum, typ, storage))
+        by_index[i] = name
         i += 1 + naux
 
     out = {}
@@ -63,10 +70,14 @@ def parse_obj_masked(data, kinds=None):
         code = data[rawp : rawp + rawsz]
         masks = set()
         rtype = {}
+        rsym = {}
         for r in range(nrel):
-            va = struct.unpack_from("<I", data, relp + r * 10)[0]
+            va, si2 = struct.unpack_from("<II", data, relp + r * 10)
             masks.update(range(va, min(va + 4, rawsz)))
             rtype[va] = struct.unpack_from("<H", data, relp + r * 10 + 8)[0]
+            if targets is not None and va + 4 <= rawsz:
+                rsym[va] = (by_index.get(si2),
+                            struct.unpack_from("<I", code, va)[0])
         fsyms = sorted(
             (v, n) for n, v, sn, typ, st in syms
             if sn == si and st in (2, 3) and typ == 0x20)
@@ -80,6 +91,9 @@ def parse_obj_masked(data, kinds=None):
             if kinds is not None:
                 kinds[n] = {o - v: t for o, t in rtype.items()
                             if v <= o < v + len(fcode)}
+            if targets is not None:
+                targets[n] = {o - v: t for o, t in rsym.items()
+                              if v <= o < v + len(fcode)}
     return out
 
 

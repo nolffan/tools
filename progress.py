@@ -5,7 +5,10 @@ The binaries, and where each one's code and ours is, are progress/targets.py:
 this file knows none of them by name. For each shipped binary it enumerates
 the functions (name + byte size) and classifies our build of each as:
 
-  identical  our bytes match the shipped function exactly (reloc-masked)
+  identical  our bytes match the shipped function exactly (reloc-masked),
+             and (where our image is linked) no string literal or
+             floating-point constant it names has other content in the
+             shipped image (_verify_literals)
   near       we have the function but bytes differ (compiler-revision variance)
   small      we have the function but it is almost entirely relocations, so
              there is nothing for the oracle to anchor on (global-initializer
@@ -112,6 +115,9 @@ import sys
 import tempfile
 
 NEAR_PAIRS = []
+# "module:symbol" -> {offset: (the symbol a relocation names, its addend)},
+# for every function _load_objs reads: what _verify_literals compares.
+RELOC_TARGETS = {}
 # (label, shipped address) -> "module:symbol", for every function exematch
 # PLACES. rows_for_image deliberately reports placed functions as `sub_<addr>`
 # because the scoreboard only needs the count, so the symbol is dropped there;
@@ -640,8 +646,8 @@ def _load_objs(objs, icl=False, graphs=None):
             g = _coff_refs(data)
             if g:
                 graphs[mod] = g
-        rk = {}
-        for k, v in parse_obj_masked(data, rk).items():
+        rk, rt = {}, {}
+        for k, v in parse_obj_masked(data, rk, rt).items():
             # instantiation drivers exist only to make VC6 emit template
             # COMDATs; they are ours, not Monolith's, and must neither score
             # nor pair
@@ -671,6 +677,7 @@ def _load_objs(objs, icl=False, graphs=None):
                     unpadded[key] = (body, {i for i in mask if i < len(body)})
             funcs[key] = v
             kinds[key] = rk.get(k, {})
+            RELOC_TARGETS[key] = rt.get(k, {})
             if lib_scored:
                 from_lib.add(key)
 
@@ -1242,11 +1249,348 @@ def _merge_split_tails(tgt, label, text, tva, starts, sizes, matched, paired,
 
 SHAPE_MOVED = []       # (label, symbol, from, to or None), for the report
 SHAPE_OK = {}          # label -> the stubs whose operands all map where placed
+# (label, symbol, from or None, to or None, evidence), for the report: a
+# placement the literals it names moved or refuted (_verify_literals). The
+# evidence is (offset, our literal, the shipped bytes) at the address the
+# function left, or None.
+LITERAL_MOVED = []
+LITERAL_OK = {}        # label -> {function: the address its literals agree at}
 # (label, shipped address) -> what proved an identical row: "linked image",
-# "relocations", "operands", "name", "only hit" or "masked match" (the
-# masked bytes match there, and the nearest anchor chose among several
-# such addresses). For the report: read by nothing in this file.
+# "relocations", "operands", "name", "literals" (a masked match where
+# every literal our function names has the same content in the shipped
+# image, at least one), "only hit" or "masked match" (the masked bytes
+# match there, and the nearest anchor chose among several such
+# addresses). For the report: read by nothing in this file.
 IDENTICAL_HOW = {}
+
+
+def _ms_number(s):
+    """A number in a mangled name ('0'-'9' are 1-10; else hex digits 'A'-'P'
+    up to an '@'): (value, the rest of s), or None."""
+    if s[:1].isdigit():
+        return int(s[0]) + 1, s[1:]
+    v, i = 0, 0
+    while i < len(s) and "A" <= s[i] <= "P":
+        v, i = v * 16 + ord(s[i]) - ord("A"), i + 1
+    if i == 0 or s[i:i + 1] != "@":
+        return None
+    return v, s[i + 1:]
+
+
+def _literal_size(sym):
+    """The length in bytes of the constant a compiler-made symbol names, or
+    None for any other symbol. A string literal (`??_C@_0<length>@...`, or
+    `??_C@_1` for a wide one) gives its length with the terminator; a
+    floating-point constant (`__real@4@<hex>` and `__real@8@<hex>` of VC6,
+    `__real@<8 or 16 hex digits>` of later compilers) is 4 or 8 bytes."""
+    if sym.startswith(("??_C@_0", "??_C@_1")):
+        r = _ms_number(sym[7:])
+        return r[0] if r else None
+    m = re.fullmatch(r"__real@(?:([48])@[0-9a-f]{20}|([0-9a-f]{8}|[0-9a-f]{16}))",
+                     sym)
+    if m:
+        return int(m.group(1)) if m.group(1) else len(m.group(2)) // 2
+    return None
+
+
+def _verify_literals(tgt, label, matched, placed, funcs, from_lib, rkinds,
+                     all_hits, mapfile, pe, text, tva, start_set, unpadded,
+                     anchors_of=lambda n: ()):
+    """IDENTICAL BY SHAPE, CHECKED BY THE LITERALS IT NAMES. The masked
+    comparison masks every relocated operand, so functions that differ
+    only in the string they pass are one shape: Object.lto's IsBody,
+    IsGameBase, IsWorldModel, IsPlayer and IsAI (`GetClass("<name>")`,
+    then the same calls) all match at each other's addresses, and name
+    order and object proximity choose. Tron 2.0's IsWorldModel was
+    credited identical at 0x100ccbd0, which passes "CPlayerObj".
+
+    The content of a literal is evidence that costs almost nothing to
+    read. A DIR32 relocation of ours that names a string literal or a
+    floating-point constant (`??_C@_...` or `__real@...`, with no addend:
+    an address just past the end of another symbol can be the same
+    address) is compared with what the shipped operand at the same
+    offset points to: the same number of bytes, in the shipped image's
+    initialised data. Different bytes REFUTE the pairing. The same bytes
+    are evidence for it. Any other operand (a global, a function, a
+    constant in code) says nothing here. The content of our literal is
+    read from our linked image, where a function of ours that names it
+    is linked. The compiler makes a literal's name from its content, so
+    the same name has the same content in every object, also in a copy
+    our link does not keep.
+
+    A function of ours whose placement a literal refutes leaves that
+    address. (One placed at the address its name gives stays out of the
+    identical rows; the near pairing finds it there.) Then it goes to a
+    hit where its literals all agree, nearest to the functions that
+    anchor its object (else to where it was): a free
+    one, or one held by a function whose literals say nothing there
+    (none of its literals is at an offset that the shipped image can
+    show, and none has an unknown content). That function then takes its
+    next free hit where nothing refutes it, or none. A function with no
+    such hit is placed nowhere here, and the other rules (near pairs)
+    see it. A function the shape placement left with no address takes a
+    free hit where its literals all agree. Where the literals of two
+    functions with no address agree at the same hit, neither takes it
+    here. The pass repeats until
+    nothing moves. Nothing becomes identical here that the masked bytes
+    do not match: the literals only choose among those addresses, or
+    remove one. The shape pass and the relocation pass that come after
+    it build on what this pass leaves."""
+    LITERAL_MOVED[:] = [r for r in LITERAL_MOVED if r[0] != label]
+    LITERAL_OK[label] = {}
+    our_img = built_image(tgt)
+    layout = _our_layout(mapfile) if mapfile else None
+    if not our_img or not layout:
+        return
+    ope = Pe(os.path.join(REPO, our_img))
+    ours_at = _ours_at(funcs, from_lib, layout, ope)
+    s_lo, s_hi = tva, tva + len(text)
+
+    def operand(which, fa, off):
+        if which is pe and s_lo <= fa + off < s_hi - 3:
+            return struct.unpack_from("<I", text, fa + off - tva)[0]
+        o = which.va2off(fa + off)
+        if o is None or o + 4 > len(which.d):
+            return None
+        return struct.unpack_from("<I", which.d, o)[0]
+
+    def data(which, va, size):
+        """size bytes at va in an image's initialised data, not its code."""
+        name, _o = which.sec_of(va)
+        if name is None or name.startswith(".text") or \
+                which.sec_of(va + size - 1)[0] != name:
+            return None
+        o = which.va2off(va)
+        if o is None or which.va2off(va + size - 1) is None:
+            return None
+        return bytes(which.d[o:o + size])
+
+    # Each literal's content, read from our image where a function of
+    # ours that names it is linked. A literal's name is its content (the
+    # compiler names a string by its text, a constant by its value), so
+    # the content is known for every function that names it, also for a
+    # copy our link does not keep.
+    def literal_relocs(n):
+        end = len(funcs[n][0])
+        tg = RELOC_TARGETS.get(n, {})
+        for off, kind in sorted(rkinds.get(n, {}).items()):
+            if kind != 0x06 or off + 4 > end:      # DIR32 only
+                continue
+            sym, addend = tg.get(off, (None, None))
+            size = _literal_size(sym) if sym and addend == 0 else None
+            if size:
+                yield off, sym, size
+
+    content = {}
+    for n in ours_at:
+        for off, sym, size in literal_relocs(n):
+            if sym not in content:
+                ov = operand(ope, ours_at[n], off)
+                b = data(ope, ov, size) if ov is not None else None
+                if b is not None:
+                    content[sym] = b
+    # each function's literals, [(offset, our bytes)]; `opaque`, the
+    # functions that name a literal whose content is not known
+    our_lits, opaque = {}, set()
+    for n in funcs:
+        if n in from_lib or n not in all_hits:
+            continue
+        got = []
+        for off, sym, _size in literal_relocs(n):
+            if sym in content:
+                got.append((off, content[sym]))
+            else:
+                opaque.add(n)
+        if got:
+            our_lits[n] = got
+
+    def verdict(n, sa):
+        """'ok' (at least one literal the same, none different), 'refuted'
+        (with the evidence) or 'unknown'."""
+        res = ("unknown", None)
+        for off, b in our_lits.get(n, ()):
+            sv = operand(pe, sa, off)
+            sb = data(pe, sv, len(b)) if sv is not None else None
+            if sb is None:
+                continue
+            if sb != b:
+                return "refuted", (off, b, sb)
+            res = ("ok", None)
+        return res
+
+    if not our_lits:
+        return
+
+    def size_at(n, h):
+        code, mask = funcs[n]
+        o = h - tva
+        if 0 <= o and o + len(code) <= len(text) and all(
+                i in mask or text[o + i] == code[i] for i in range(len(code))):
+            return len(code)
+        if n in unpadded:
+            return len(unpadded[n][0])
+        return len(code)
+
+    holder = {a: PLACED_SYMS.get((label, a)) for a in matched}
+    at = {n: a for a, n in holder.items() if n is not None}
+    first = dict(at)
+    evidence = {}
+
+    def clear(h, size, but=None):
+        return not any(b < h + size and h < b + s for b, s in matched.items()
+                       if b != but)
+
+    def unplace(n):
+        a = at.pop(n)
+        del matched[a]
+        PLACED_SYMS.pop((label, a), None)
+        holder.pop(a, None)
+
+    def put(n, h, size):
+        matched[h] = size
+        PLACED_SYMS[(label, h)] = n
+        holder[h], at[n] = n, h
+
+    def ordered(n, hits, ref):
+        # (nearest to the addresses that anchor n's object, as the shape
+        # placement chooses; else to where n was)
+        anc = list(anchors_of(n)) or ([ref] if ref else [])
+        return sorted(hits, key=lambda h: (
+            h not in start_set, min(abs(h - a) for a in anc) if anc else h))
+
+    # the placements a literal refutes leave their address (one placed at
+    # the address its name gives is not identical there, and goes nowhere
+    # else: the near pairing finds it at that address)
+    homeless = []
+    for n in sorted(our_lits):
+        if n not in at or n in from_lib:
+            continue
+        st, why = verdict(n, at[n])
+        if st == "refuted":
+            evidence[n] = why
+            if os.environ.get("PROGRESS_SHAPE_LOG"):
+                print("    literal refutes", n, hex(at[n]), why,
+                      file=sys.stderr)
+            unplace(n)
+            if n not in placed:
+                homeless.append(n)
+    # ... and those the shape placement left with no address try too (not
+    # a second copy of a function placed already: an inline function is a
+    # COMDAT in every object that uses it, and the shipped link kept one.
+    # The names the compiler makes per object, `_$E12`, are each their
+    # own function.)
+    held = {n.split(":", 1)[-1] for n in at}
+    homeless += sorted(
+        n for n in our_lits if n not in at and n not in from_lib and
+        n not in placed and n not in homeless and not (
+            n.split(":", 1)[-1] in held and
+            not re.match(r"_?\$E\d|\?\?__[EF]", n.split(":", 1)[-1])))
+    bumped = []          # displaced: their literals said nothing there
+    bare = {n: n.split(":", 1)[-1] for n in our_lits}
+    by_hit = {}
+    for n in our_lits:
+        for h in all_hits.get(n, ()):
+            by_hit.setdefault(h, []).append(n)
+
+    def contested(n, h, held_now):
+        """Another function of ours with no address, not a copy of n or
+        of a function placed already, that names a literal at each offset
+        where n does, and whose literals agree at h too: the literals do
+        not say which of the two h is. (ServerButeMgr's
+        GetSecurityCameraInt and GetSecurityCameraFloat both pass
+        "SecurityCamera"; the call they make tells them apart, and the
+        shape pass reads that.)"""
+        offs = {off for off, _b in our_lits[n]}
+        return any(m != n and m not in at and m not in placed and
+                   bare[m] != bare[n] and bare[m] not in held_now and
+                   offs <= {off for off, _b in our_lits[m]} and
+                   verdict(m, h)[0] == "ok" for m in by_hit.get(h, ()))
+
+    for _round in range(16):
+        moved = False
+        held_now = {m.split(":", 1)[-1] for m in at}
+        for n in list(homeless):
+            ref = first.get(n)
+            for h in ordered(n, all_hits.get(n, ()), ref):
+                if verdict(n, h)[0] != "ok" or \
+                        contested(n, h, held_now):
+                    continue
+                size = size_at(n, h)
+                hn = holder.get(h)
+                if hn is None:
+                    if not clear(h, size):
+                        continue
+                elif hn in placed or hn in from_lib or hn in opaque or \
+                        verdict(hn, h)[0] != "unknown" or \
+                        not clear(h, size, h):
+                    continue
+                else:
+                    unplace(hn)
+                    bumped.append(hn)
+                put(n, h, size)
+                homeless.remove(n)
+                moved = True
+                break
+        for n in list(bumped):
+            ref = first.get(n)
+            for h in ordered(n, all_hits.get(n, ()), ref):
+                size = size_at(n, h)
+                if h in holder or not clear(h, size) or \
+                        verdict(n, h)[0] == "refuted":
+                    continue
+                put(n, h, size)
+                bumped.remove(n)
+                moved = True
+                break
+        if not moved:
+            break
+    LITERAL_OK[label] = {n: at[n] for n in our_lits if n in at and
+                         verdict(n, at[n])[0] == "ok"}
+    for n in sorted(set(first) | set(at)):
+        if first.get(n) != at.get(n) and (n in our_lits or n in first):
+            LITERAL_MOVED.append((label, n, first.get(n), at.get(n),
+                                  evidence.get(n)))
+    rows = [r for r in LITERAL_MOVED if r[0] == label]
+    if rows:
+        print(f"  {label}: placements their literals moved or refuted: "
+              f"{sum(1 for r in rows if r[2] is not None and r[3] is not None)}"
+              f" moved, {sum(1 for r in rows if r[3] is None)} placed "
+              f"nowhere, {sum(1 for r in rows if r[2] is None)} placed "
+              f"where none was", file=sys.stderr)
+        if os.environ.get("PROGRESS_SHAPE_LOG"):
+            for r in rows:
+                print(f"    {r[1]} {'-' if r[2] is None else hex(r[2])} -> "
+                      f"{'-' if r[3] is None else hex(r[3])}"
+                      + (f" ({r[4][1]!r} where {r[4][2]!r})" if r[4] else ""),
+                      file=sys.stderr)
+
+
+def _ours_at(funcs, from_lib, layout, ope):
+    """{function: its address in our linked image}, from the map. A body
+    /OPT:ICF folded into another object's identical one (the map lists the
+    name under that object), or a COMDAT another object's copy stands for:
+    that address, provided our image's bytes there are this copy's, so its
+    relocations hold."""
+    by_sym = {}
+    for (mod, sym), a in layout.items():
+        by_sym.setdefault(sym, set()).add(a)
+    ours_at = {}
+    for n in funcs:
+        if n in from_lib or ":" not in n:
+            continue
+        mod, sym = n.split(":", 1)
+        a = layout.get((mod.lower(), sym))
+        if a is None and len(by_sym.get(sym, ())) == 1:
+            a = next(iter(by_sym[sym]))
+            code, mask = funcs[n]
+            o = ope.va2off(a)
+            if o is None or o + len(code) > len(ope.d) or any(
+                    i not in mask and ope.d[o + i] != code[i]
+                    for i in range(len(code))):
+                a = None
+        if a is not None:
+            ours_at[n] = a
+    return ours_at
 
 
 def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
@@ -1298,29 +1642,7 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
         return struct.unpack_from("<I", p.d, o)[0] \
             if o is not None and o + 4 <= len(p.d) else None
 
-    by_sym = {}
-    for (mod, sym), a in layout.items():
-        by_sym.setdefault(sym, set()).add(a)
-    ours_at = {}
-    for n in funcs:
-        if n in from_lib or ":" not in n:
-            continue
-        mod, sym = n.split(":", 1)
-        a = layout.get((mod.lower(), sym))
-        if a is None and len(by_sym.get(sym, ())) == 1:
-            # a body /OPT:ICF folded into another object's identical one
-            # (the map lists the name under that object), or a COMDAT
-            # another object's copy stands for: that address, provided our
-            # image's bytes there are this copy's, so its relocations hold
-            a = next(iter(by_sym[sym]))
-            code, mask = funcs[n]
-            o = ope.va2off(a)
-            if o is None or o + len(code) > len(ope.d) or any(
-                    i not in mask and ope.d[o + i] != code[i]
-                    for i in range(len(code))):
-                a = None
-        if a is not None:
-            ours_at[n] = a
+    ours_at = _ours_at(funcs, from_lib, layout, ope)
 
     def operand(which, fa, off, kind):
         if which is pe and s_lo <= fa + off < s_hi - 3:
@@ -1884,6 +2206,10 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             lib_block[mod] = (max(below) if below else tva,
                               min(above) if above else tva + len(text))
 
+    _verify_literals(tgt, label, matched, placed, funcs, from_lib, rkinds,
+                     all_hits, mapfile, pe, text, tva, start_set, unpadded,
+                     lambda n: obj_anchors.get(_lib_of(n), ())
+                     if _obj_local(n) else ())
     _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
                        all_hits, mapfile, pe, text, tva, start_set)
 
@@ -3223,6 +3549,7 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                 "relocations" if a in verified else
                 "operands" if n in SHAPE_OK.get(label, ()) else
                 "name" if n in placed else
+                "literals" if LITERAL_OK.get(label, {}).get(n) == a else
                 "only hit" if len(all_hits.get(n, ())) == 1 else
                 "masked match")
         elif a in paired:

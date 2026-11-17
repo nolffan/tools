@@ -5,7 +5,8 @@ fooled.
     python3 -m unittest discover -s tools/tests     (from a project), or
     python3 -m unittest discover -s tests           (from tools/ itself)
 
-Covered: a wrong float literal behind a masked relocation (fpconst.py); a
+Covered: a wrong float literal behind a masked relocation (fpconst.py); the
+literal a relocation names (progress.py's _verify_literals); a
 relocated `mov reg, imm32` after an `fstp st(0)` not taken for an x87
 operand (fpconst.py, x86len.py); instruction lengths (x86len.py); an
 interior match, a shared tail and a non-start hit (progress.py's
@@ -132,6 +133,31 @@ class FloatConstants(unittest.TestCase):
         # field is d8, which the old checker took for an x87 opcode
         checked, bad, _u = self.run_case(1.0, 0.001, prefix=b"\xdd\xd8\xbe")
         self.assertEqual((checked, bad), (0, 0))
+
+
+class Literals(unittest.TestCase):
+    """What _verify_literals reads: the length of the literal a symbol
+    names, and the symbol and addend of each relocation."""
+
+    def test_literal_sizes(self):
+        size = progress._literal_size
+        self.assertEqual(size("??_C@_0L@KLLA@CPlayerObj?$AA@"), 11)
+        self.assertEqual(size("??_C@_04JFPK@Body?$AA@"), 5)
+        self.assertEqual(size("??_C@_0BI@BCAA@AISpatialRepresentation?$AA@"),
+                         24)
+        self.assertEqual(size("__real@4@3ff9a3d70a0000000000"), 4)
+        self.assertEqual(size("__real@8@3fffc90fdb0000000000"), 8)
+        self.assertEqual(size("__real@3f800000"), 4)
+        self.assertEqual(size("__real@3ff0000000000000"), 8)
+        self.assertIsNone(size("?_M_list@?$_Stl_prime@_N@_STL@@2QBKB"))
+
+    def test_relocation_targets(self):
+        # push lit ; push lit+4 ; ret: the second is not the literal
+        code = b"\x68\0\0\0\0\x68\x04\0\0\0\xc3"
+        from exematch import parse_obj_masked
+        targets = {}
+        parse_obj_masked(coff(code, [1, 6], b"Body\0\0\0\0"), {}, targets)
+        self.assertEqual(targets["_f"], {1: ("_lit", 0), 6: ("_lit", 4)})
 
 
 class Lengths(unittest.TestCase):
