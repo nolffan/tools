@@ -25,12 +25,16 @@ import subprocess
 import sys
 import tempfile
 
-HERE = __file__.rsplit("/", 1)[0]
-REPO = os.path.dirname(os.path.abspath(HERE))
+HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from libextract import extract                      # noqa: E402
 from objdiff import parse_obj                       # noqa: E402
 import fndiff                                       # noqa: E402
+import progress                                     # noqa: E402
+# The project's root, as the other tools find it (progress.REPO): not the
+# directory above this file, which is ext/ when the tools are a submodule
+# at ext/tools.
+REPO = progress.REPO
 
 OURS = "src/lithshared/out/{}.lib"
 
