@@ -29,17 +29,27 @@ def main():
     if len(args) != 2:
         sys.exit(__doc__)
     ch = int(opts.get("--characteristics", "3"))
-    pairs, seen = [], set()
-    for line in open(args[0]):
+    pairs, seen = [], {}
+    for n, line in enumerate(open(args[0]), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         if line.upper().startswith("/ALTERNATENAME:"):
             line = line.split(":", 1)[1]
         a, t = line.split("=", 1)
-        if a in seen or a == t:
+        if a == t:
             continue
-        seen.add(a)
+        if a in seen:
+            # Only the first binding of a name counts. A later line that
+            # binds it to another target has no effect: say so, because the
+            # later line is often the checked one (avp2src's server.dll and
+            # lithtech.exe had object banks bound to the wrong records).
+            if seen[a][1] != t:
+                sys.stderr.write("mkaliasobj.py: warning: %s:%d: %s is bound "
+                                 "again (to %s); line %d's %s is the one used\n"
+                                 % (args[0], n, a, t, seen[a][0], seen[a][1]))
+            continue
+        seen[a] = (n, t)
         pairs.append((a, t))
 
     strtab = bytearray(b"\0\0\0\0")
