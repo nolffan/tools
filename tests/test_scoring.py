@@ -9,7 +9,8 @@ Covered: a wrong float literal behind a masked relocation (fpconst.py); a
 relocated `mov reg, imm32` after an `fstp st(0)` not taken for an x87
 operand (fpconst.py, x86len.py); instruction lengths (x86len.py); an
 interior match, a shared tail and a non-start hit (progress.py's
-_resolve_overlaps); whole-image identity through the time stamps but not
+_resolve_overlaps); split tails merged into a near row only on proof
+(progress.py's _merge_split_tails); whole-image identity through the time stamps but not
 through a changed byte (progress.py, buildcmp.py); known and new data
 differences (datacheck.py). Not covered here, by their nature: vtabcheck.py
 and the region rules need a linked image and a map (tested against the
@@ -180,6 +181,64 @@ class Overlaps(unittest.TestCase):
         spans = sorted((a, a + n) for a, n in m.items())
         for (a0, e0), (a1, _e1) in zip(spans, spans[1:]):
             self.assertLessEqual(e0, a1)
+
+
+class SplitTails(unittest.TestCase):
+    """progress.py's _merge_split_tails: a start the flow from the row in
+    front of it reaches is merged only into a near row whose function of
+    ours is long enough to reach it."""
+    TVA = 0x1000
+    TGT = {"label": "T", "app": [(0x1000, 0x2000)]}
+
+    def merge(self, text, starts, sizes, paired, funcs):
+        progress.SPLIT_TAILS.clear()
+        sizes = dict(sizes)
+        out = progress._merge_split_tails(self.TGT, "T", text, self.TVA,
+                                          list(starts), sizes, {}, paired,
+                                          set(), funcs, False)
+        return out, sizes
+
+    def test_conditional_jump_target_is_a_tail(self):
+        # 0: test eax,eax; jne +3; xor eax,eax; ret | 7: mov eax,1; ret
+        text = bytes.fromhex("85c0750331c0c3" "b801000000c3")
+        out, sizes = self.merge(text, [0x1000, 0x1007], {0x1000: 7,
+                                0x1007: 6}, {0x1000: "f"},
+                                {"f": (text, set())})
+        self.assertEqual(out, [0x1000])
+        self.assertEqual(sizes[0x1000], 13)
+
+    def test_inside_an_instruction_is_a_tail(self):
+        # 0: mov eax,0x0000c3c3 (b8 c3 c3 00 00): a start at 2 is inside it
+        text = bytes.fromhex("b8c3c30000c3")
+        out, _s = self.merge(text, [0x1000, 0x1002], {0x1000: 2, 0x1002: 4},
+                             {0x1000: "f"}, {"f": (text, set())})
+        self.assertEqual(out, [0x1000])
+
+    def test_unconditional_jump_is_no_proof(self):
+        # 0: jmp +0 (a tail call to the next function) | 2: ret
+        text = bytes.fromhex("eb00c3")
+        out, _s = self.merge(text, [0x1000, 0x1002], {0x1000: 2, 0x1002: 1},
+                             {0x1000: "f"}, {"f": (text, set())})
+        self.assertEqual(out, [0x1000, 0x1002])
+
+    def test_after_a_call_is_no_proof(self):
+        # 0: call (may not return) | 5: ret
+        text = bytes.fromhex("e800000000c3")
+        out, _s = self.merge(text, [0x1000, 0x1005], {0x1000: 5, 0x1005: 1},
+                             {0x1000: "f"}, {"f": (text, set())})
+        self.assertEqual(out, [0x1000, 0x1005])
+
+    def test_ours_too_short_keeps_the_tail(self):
+        text = bytes.fromhex("85c0750331c0c3" "b801000000c3")
+        out, _s = self.merge(text, [0x1000, 0x1007], {0x1000: 7, 0x1007: 6},
+                             {0x1000: "f"}, {"f": (text[:7], set())})
+        self.assertEqual(out, [0x1000, 0x1007])
+
+    def test_not_near_keeps_the_tail(self):
+        text = bytes.fromhex("85c0750331c0c3" "b801000000c3")
+        out, _s = self.merge(text, [0x1000, 0x1007], {0x1000: 7, 0x1007: 6},
+                             {}, {"f": (text, set())})
+        self.assertEqual(out, [0x1000, 0x1007])
 
 
 class WholeImage(unittest.TestCase):

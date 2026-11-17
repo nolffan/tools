@@ -56,6 +56,19 @@ requires both at zero). unplaced, unreferenced, unlinked and driver rows
 are ours, not
 shipped functions: none of them is in the denominator.
 
+Two things in the shipped image are not one function to one row, and the
+scorer pairs each only on proof (see each function):
+
+  split tails     a start the enumeration takes in the middle of a
+                  function (a switch's case label, an operand byte). It
+                  joins the near row in front of it when control flow from
+                  that row reaches it and our function there reaches it
+                  too, and takes that row's status (_merge_split_tails)
+  folded code     one shipped function that /OPT:ICF made of several of
+                  ours: one for the mapping of addresses and the count of
+                  short shapes, only when ours are the same bytes and name
+                  the same things (IDENTICAL CODE FOLDING, _rows_for_image)
+
 Ground truth is always the SHIPPED binary, so the denominator can't drift:
 the retail images build/reference.sh extracts into out/reference/. A
 resource-only image is scored resource by resource (rows_for_resources). A
@@ -123,6 +136,7 @@ from libextract import extract  # noqa: E402
 from exematch import parse_obj_masked, find  # noqa: E402
 from exedump import Pe  # noqa: E402
 from enumfuncs import Image as EnumImage, enumerate_functions  # noqa: E402
+import x86len as _x86  # noqa: E402
 
 from layout import PROJECT as REPO  # noqa: E402
 sys.path.insert(0, os.path.join(REPO, "progress"))
@@ -1090,7 +1104,149 @@ def _resolve_overlaps(label, matched, placed, start_set, funcs, all_hits,
               f"a better one", file=sys.stderr)
 
 
+def _flow(text, tva, p, t, bound):
+    """How the code at shipped address p reaches t, staying in [p, bound):
+    ({address: kinds}, {address: length}) of the instructions control flow
+    reaches from p. A kind is how an instruction was reached: "jcc" (a
+    conditional jump's target), "switch" (an entry of the jump table an
+    indirect `jmp [reg*4+table]` indexes), "fall" (it follows an
+    instruction that is not a call, a nop or an int3), "fallcall" (it
+    follows one of those) or "jmp" (an unconditional jump's target, only
+    followed below t: one to t or past it may be a tail call to another
+    function)."""
+    reach, insn = {}, {}
+    work = [(p, "entry")]
+    end = tva + len(text)
+    while work:
+        a, how = work.pop()
+        while p <= a < bound:
+            reach.setdefault(a, set()).add(how)
+            if a in insn:
+                break
+            ins = _x86.decode(text, a - tva)
+            if ins is None:
+                break
+            insn[a] = ins.length
+            nxt = a + ins.length
+            op = ins.op
+            if op in (0xC3, 0xC2, 0xCC):
+                break
+            if op in (0xE9, 0xEB):
+                rel = struct.unpack_from("<i" if op == 0xE9 else "<b", text,
+                                         ins.imm_off)[0]
+                if nxt + rel < t:
+                    work.append((nxt + rel, "jmp"))
+                break
+            if 0x70 <= op <= 0x7F or op in (0xE0, 0xE1, 0xE2, 0xE3):
+                work.append((nxt + struct.unpack_from("<b", text,
+                                                      ins.imm_off)[0], "jcc"))
+            elif 0x0F80 <= op <= 0x0F8F:
+                work.append((nxt + struct.unpack_from("<i", text,
+                                                      ins.imm_off)[0], "jcc"))
+            if op == 0xFF and ins.reg in (4, 5):
+                if ins.reg == 4 and ins.mod == 0 and ins.rm == 4 and \
+                        ins.disp_len == 4:
+                    k = struct.unpack_from("<I", text, ins.disp_off)[0]
+                    while tva <= k <= end - 4:
+                        e = struct.unpack_from("<I", text, k - tva)[0]
+                        if not p <= e < bound:
+                            break
+                        work.append((e, "switch"))
+                        k += 4
+                break
+            call = op == 0xE8 or (op == 0xFF and ins.reg in (2, 3)) or \
+                op in (0x90, 0xCC)
+            a, how = nxt, "fallcall" if call else "fall"
+    return reach, insn
+
+
+SPLIT_TAILS = []       # (label, parent, tail, tail size, how)
+
+
+def _merge_split_tails(tgt, label, text, tva, starts, sizes, matched, paired,
+                       small, funcs, icl):
+    """SPLIT TAILS. The enumeration takes for a function start what is only
+    a place inside one: a switch's case label (its jump table points at
+    it), a block a byte that reads as `call rel32` or `push imm32` happens
+    to name, a byte in the middle of an instruction. Such a start cuts its
+    function in two rows. Where we have the function and it is identical,
+    the second row is inside the matched bytes and drops out (`inside`);
+    where it is near, the second row stayed unwritten, though our function
+    covers it, and it changed between todo and absorbed from one build to
+    the next as the function went between near and identical.
+
+    A start t is a tail of the row p in front of it only on both of these:
+
+      the shipped code: control flow from p reaches t by a conditional
+      jump, a jump table, or by falling through from an instruction that
+      is not a call (a call may not return), or t is inside an
+      instruction that flow from p reaches. An unconditional jump to t
+      proves nothing (a tail call to the next function is one).
+
+      ours: the function of ours placed near at p is long enough to reach
+      t. (If ours is shorter, the shipped tail may be code we have not
+      written: it stays a row of its own.)
+
+    Then t's bytes are p's: t's row is removed and p's extends over it.
+    Its status is p's, near: nothing is claimed for its bytes. Rows are
+    merged one after the other while the next start passes both tests.
+    Returns the new start list."""
+    drop = set()
+
+    def blen(code):
+        code = bytes(code)
+        end = len(code)
+        while end > 0 and code[end - 1] in (0x90, 0xCC):
+            end -= 1
+        return len(strip_pad(code[:end])) if icl else end
+
+    for i, p in enumerate(starts):
+        if p in drop or p not in paired or p in matched or p in small:
+            continue
+        n = paired[p]
+        if n not in funcs:
+            continue
+        ours = blen(funcs[n][0])
+        j = i + 1
+        while j < len(starts):
+            t = starts[j]
+            if t in matched or t in paired or t in small or \
+                    not in_app(tgt, t) or t - p >= ours or \
+                    not sizes.get(t):
+                break
+            bound = t + sizes[t]
+            reach, insn = _flow(text, tva, p, t, bound)
+            how = None
+            kinds = reach.get(t, set()) if t in insn else set()
+            for k in ("jcc", "switch", "fall"):
+                if k in kinds:
+                    how = k
+                    break
+            if how is None and t not in insn:
+                if any(b < t < b + m for b, m in insn.items()):
+                    how = "mid"
+            if how is None:
+                break
+            drop.add(t)
+            SPLIT_TAILS.append((label, p, t, sizes[t], how))
+            sizes[p] = bound - p
+            NEAR_PAIRS[:] = [(r[0], r[1], sizes[p]) + tuple(r[3:])
+                             if r[0] == label and r[1] == p else r
+                             for r in NEAR_PAIRS]
+            j += 1
+    if drop:
+        print(f"  {label}: {len(drop)} split tail(s) merged into the near "
+              f"function in front of them", file=sys.stderr)
+    return [a for a in starts if a not in drop]
+
+
 SHAPE_MOVED = []       # (label, symbol, from, to or None), for the report
+SHAPE_OK = {}          # label -> the stubs whose operands all map where placed
+# (label, shipped address) -> what proved an identical row: "linked image",
+# "relocations", "operands", "name", "only hit" or "masked match" (the
+# masked bytes match there, and the nearest anchor chose among several
+# such addresses). For the report: read by nothing in this file.
+IDENTICAL_HOW = {}
 
 
 def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
@@ -1205,6 +1361,7 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
 
     ambiguous = {n for n in at if n not in placed and relocs(n) and
                  len(all_hits.get(n, ())) > 1 and stub(n)}
+    SHAPE_OK[label] = set()
     if not ambiguous:
         return
     o_imp, s_imp = {}, {}
@@ -1450,9 +1607,11 @@ def _verify_shape_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
         if len({ours_at[n] for n in ns}) != 1:
             continue
         put(ns[0], sa)
+        good.add(ns[0])
         took += 1
         if os.environ.get("PROGRESS_SHAPE_LOG"):
             print("    free", hex(sa), "taken by", ns[0], file=sys.stderr)
+    SHAPE_OK[label] = {n for n in good if n in at}
     for n in sorted(first):
         if at.get(n) != first[n]:
             SHAPE_MOVED.append((label, n, first[n], at.get(n)))
@@ -2082,6 +2241,8 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     # at, and displaces a near pairing only when the function paired there
     # has no reference saying so.
     by_ref = 0
+    verified = {}
+    icf_fold = None    # symbol -> what our code is, when /OPT:ICF would fold
     our_img = built_image(tgt) if ours_at else None
     if our_img:
         ope = Pe(os.path.join(REPO, our_img))
@@ -2358,6 +2519,47 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             return {k: v for k, v in out.items() if k not in dup}
 
         o_imp, s_imp = imports_by_name(ope), imports_by_name(pe)
+
+        # IDENTICAL CODE FOLDING. The shipped links fold functions whose
+        # code is the same, byte for byte with every relocation naming the
+        # same thing (/OPT:ICF): the trivial destructors of a dozen
+        # CSpecialFX classes are one function at CShell.dll 0x10111590.
+        # Our scoring links do not fold. So one shipped address stands for
+        # several of ours, and is seen with each of them: as a
+        # contradiction, it mapped nothing. It maps when those functions of
+        # ours are one function by that rule -- the same bytes, the same
+        # relocations at the same offsets, and every relocation's target in
+        # our image the same. (A relocation whose target is not in our
+        # image's sections proves nothing: not the same.)
+        def icf_fold_key(n):
+            if n not in ours_at or n not in funcs:
+                return None
+            code, mask = funcs[n]
+            end = blen(n)
+            rk = rkinds.get(n, {})
+            tgts = []
+            for off, kind in sorted(rk.items()):
+                if off >= end:
+                    continue
+                v = operand(ope, ours_at[n], off, kind)
+                if v is None:
+                    return None
+                tgts.append((off, kind, v))
+            return (bytes(code[:end]),
+                    tuple(sorted(i for i in mask if i < end)), tuple(tgts))
+        icf_fold = icf_fold_key
+        _icf_seen = {}
+
+        def icf_same(ovs):
+            key = frozenset(ovs)
+            if key not in _icf_seen:
+                ks = set()
+                for ov in ovs:
+                    ns = [n for n in at_ours.get(ov, ()) if n in funcs]
+                    k = icf_fold_key(ns[0]) if ns else None
+                    ks.add(k)
+                _icf_seen[key] = None not in ks and len(ks) == 1
+            return _icf_seen[key]
         verified = {}          # shipped address -> ours, verified here
         ident_n = {n: sa for n, sa in placed_at.items()
                    if sa in matched and n in ours_at}
@@ -2383,7 +2585,8 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
 
             def unique(f, r):
                 return {o: next(iter(ss)) for o, ss in f.items()
-                        if len(ss) == 1 and len(r[next(iter(ss))]) == 1}
+                        if len(ss) == 1 and (len(r[next(iter(ss))]) == 1 or
+                                             icf_same(r[next(iter(ss))]))}
             m = unique(fwd, rev)
             # the vtables the operands pair, slot by slot
             for oa, sa, nslots in vt:
@@ -2673,6 +2876,12 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             k = prev[k]
         return out[::-1]
 
+    # (the split tails of what is paired so far: before the join, which
+    # would otherwise pair a tail as a function of its own)
+    SPLIT_TAILS[:] = [r for r in SPLIT_TAILS if r[0] != label]
+    starts = _merge_split_tails(tgt, label, text, tva, starts, sizes,
+                                matched, paired, small, funcs, icl)
+
     # A target's `compiler_output` ranges hold the shipped image's
     # initializers, terminators and exception funclets: ours of those
     # (by their compiler-given names) are placed there and nowhere else,
@@ -2827,6 +3036,9 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             print(f"  {label}: placed {joined['name']} by name, "
                   f"{joined['object']} by object order, {joined['image']} by "
                   f"link order", file=sys.stderr)
+        # (and of what the join paired)
+        starts = _merge_split_tails(tgt, label, text, tva, starts, sizes,
+                                    matched, paired, small, funcs, icl)
 
     rows = []
     seen_unreadable = set()
@@ -2931,7 +3143,10 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         for key, ns in mine_by_shape.items():
             # functions, not names: several names can share one address in
             # our own link
-            n_ours = len({ours_at[n] for n in ns})
+            # (and functions our link keeps apart that the shipped link's
+            # /OPT:ICF would fold into one, as above, are one function)
+            n_ours = len({(icf_fold(n) if icf_fold else None) or ours_at[n]
+                          for n in ns})
             short_over[key] = max(0, n_ours - theirs_count[key])
 
     for n, (code, mask) in sorted(funcs.items()):
@@ -3002,6 +3217,14 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             rows.append((label, "sub_%x" % a, size, where))
         elif a in matched:
             rows.append((label, "sub_%x" % a, size, "identical"))
+            n = PLACED_SYMS.get((label, a))
+            IDENTICAL_HOW[(label, a)] = (
+                "linked image" if a in linked_ours else
+                "relocations" if a in verified else
+                "operands" if n in SHAPE_OK.get(label, ()) else
+                "name" if n in placed else
+                "only hit" if len(all_hits.get(n, ())) == 1 else
+                "masked match")
         elif a in paired:
             rows.append((label, "sub_%x" % a, size, "near"))
         elif a in small:
