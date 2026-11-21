@@ -14,6 +14,9 @@
 #                     and patch artifacts (a submodule too)
 #   out/reference/    the retail images the checks compare against
 #                     (build/reference.sh)
+#   out/retail/, isos/  the installed retail game and the disc images, in a
+#                     project that installs it from the player's own discs
+#                     (nolfsrc: build/discs.py)
 #   ext/ffmpeg/       FFmpeg, which the modern build's Bink player is built
 #                     on (build/ext.sh; a submodule)
 #
@@ -67,7 +70,7 @@ add)
         git -C "$dir/$t" checkout -q "$(git -C "$dir" ls-tree HEAD "$t" | awk '{print $3}')"
     fi
     # the submodules' contents and the reference images, hard-linked
-    for d in toolchains rez ext/toolchains ext/rez out/reference ext/ffmpeg; do
+    for d in toolchains rez ext/toolchains ext/rez out/reference out/retail isos ext/ffmpeg; do
         [ -d "$REPO/$d" ] || continue
         mkdir -p "$dir/$d"
         for t in "$REPO/$d"/* "$REPO/$d"/.[!.]*; do
