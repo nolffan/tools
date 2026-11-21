@@ -95,6 +95,16 @@ def sha(b):
     return hashlib.sha256(bytes(b)).hexdigest()
 
 
+ANON = re.compile(r"\?%[^@]*@")
+
+
+def anon(sym):
+    """A symbol with its anonymous namespace's name left out: VC6 names it
+    `?%<source path><number>@`, and the number differs from one checkout
+    or build of the same source to the next."""
+    return ANON.sub("?%@", sym)
+
+
 class Layout:
     """Our link's .map: (module, symbol) -> address, and back."""
 
@@ -102,8 +112,10 @@ class Layout:
         import bisect
         self.by_key = layout or {}
         self.by_sym = {}
+        self.by_anon = {}
         for (mod, s), a in self.by_key.items():
             self.by_sym.setdefault(s, set()).add(a)
+            self.by_anon.setdefault((mod, anon(s)), set()).add(a)
         self.starts = sorted({a for a in self.by_key.values()})
         self.at = {}
         for k, a in sorted(self.by_key.items()):
@@ -138,6 +150,8 @@ class Layout:
         m = re.match(r"(.*?):(.*?)(?:\+0x([0-9a-f]+))?$", loc)
         mod, s, d = m.group(1), m.group(2), int(m.group(3) or "0", 16)
         a = self.by_key.get((mod, s))
+        if a is None and len(self.by_anon.get((mod, anon(s)), ())) == 1:
+            a = next(iter(self.by_anon[(mod, anon(s))]))   # another build's name
         if a is None and len(self.by_sym.get(s, ())) == 1:
             a = next(iter(self.by_sym[s]))       # the map names another module
         return None if a is None else a + d
@@ -232,7 +246,11 @@ def check(no_art=False):
                         if os.path.basename(f).lower() == m.group(2).lower():
                             data = open(f, "rb").read()
             cache[mod] = parse_obj_masked(data) if data else {}
-        return cache[mod].get(sym)
+        got = cache[mod].get(sym)
+        if got is None:
+            same = [v for k, v in cache[mod].items() if anon(k) == anon(sym)]
+            got = same[0] if len(same) == 1 else None
+        return got
 
     lib_code = {}
 

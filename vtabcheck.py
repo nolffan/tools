@@ -282,7 +282,7 @@ def main():
 
     def slot_name(va):
         """Our symbol at va, as --hashes records it (`?`: none)."""
-        names = sorted(a2s.get(va, ()))
+        names = sorted(anon(n) for n in a2s.get(va, ()))
         return names[0] if names else "?"
     # `??_E` (vector deleting dtor) is a weak external onto `??_G` in the
     # objects that need it; naming it from another object does not resolve.
@@ -1188,9 +1188,19 @@ HASH_HEADER = """\
 """
 
 
+ANON = re.compile(r"\?%[^@]*@")
+
+
+def anon(sym):
+    """A symbol with its anonymous namespace's name left out: VC6 names it
+    `?%<source path><number>@`, and the number differs from one checkout
+    or build of the same source to the next."""
+    return ANON.sub("?%@", sym)
+
+
 def names_sha(names):
     import hashlib
-    return hashlib.sha256("\n".join(names).encode("latin-1")).hexdigest()
+    return hashlib.sha256("\n".join(anon(n) for n in names).encode("latin-1")).hexdigest()
 
 
 def hash_rows(rec):
@@ -1247,10 +1257,16 @@ def check_ci():
         aliases = load_aliases(os.path.join(REPO, auto)) if \
             os.path.exists(os.path.join(REPO, auto)) else {}
 
+        by_anon = {}
+        for n_, a_ in s2a.items():
+            by_anon.setdefault(anon(n_), set()).add(a_)
+
         def resolve(sym):
             k = 0
             while sym not in s2a and sym in aliases and k < 10:
                 sym, k = aliases[sym], k + 1
+            if sym not in s2a and len(by_anon.get(anon(sym), ())) == 1:
+                return next(iter(by_anon[anon(sym)]))      # another build's name
             return s2a.get(sym)
 
         starts = sorted(a2s)
@@ -1258,7 +1274,7 @@ def check_ci():
         n = {"T": 0, "W": 0}
 
         def first(va):
-            names = sorted(a2s.get(va, ()))
+            names = sorted(anon(n) for n in a2s.get(va, ()))
             return names[0] if names else "?"
 
         for r in rows[label]:
@@ -1285,7 +1301,7 @@ def check_ci():
                         sym, " ".join(first(v) for v in slots[:int(nslots)])[:300]))
             else:
                 _k, _l, name, offs, want = r
-                ova = s2a.get(name)
+                ova = resolve(name)
                 if not ova:
                     bad.append("%s: not in our map" % name)
                     continue
