@@ -278,6 +278,12 @@ def main():
         ship.text = progress._restore_iat_calls(tgt, ship.text, ship.tlo)
     our = Img(os.path.join(REPO, ours_img))
     s2a, a2s = load_map(os.path.join(REPO, mapf))
+    rec = [] if opts.get("--hashes") else None
+
+    def slot_name(va):
+        """Our symbol at va, as --hashes records it (`?`: none)."""
+        names = sorted(a2s.get(va, ()))
+        return names[0] if names else "?"
     # `??_E` (vector deleting dtor) is a weak external onto `??_G` in the
     # objects that need it; naming it from another object does not resolve.
     for a in a2s:
@@ -927,6 +933,11 @@ def main():
                 any(slot_fits(x, st_) for x in a2s.get(o_, ()))
                 for o_, st_ in zip(oslots_, sslots_))
 
+        if rec is not None and sym not in known:
+            # what the disc-free check holds this table to (--hashes): the
+            # shipped length, and our slots as the symbols they are
+            rec.append(("T", label, sym, len(sslots),
+                        [slot_name(o_) for o_ in oslots[:len(sslots)]]))
         remapped = None
         if probs and sslots:
             # Our table may be right and the mapping wrong: same-shape
@@ -1049,6 +1060,8 @@ def main():
                     o = (ova + off + 4 + o) & 0xFFFFFFFF
                     v = (st + off + 4 + v) & 0xFFFFFFFF
                     if v in our_to_ship(o):
+                        if rec is not None:
+                            rec.append(("K", label, name, off, slot_name(o)))
                         continue
                     # Our callee's body at the shipped target is the same
                     # call: the shipped linker folded identical bodies
@@ -1067,6 +1080,8 @@ def main():
                     ours_c = [canon(x) for x in a2s.get(o, []) if canon(x) in code_of]
                     checked.append((name, off, ova + off))
                     if any(fits(cx, v) for cx in ours_c):
+                        if rec is not None:
+                            rec.append(("K", label, name, off, slot_name(o)))
                         continue
                     # ... and a contradiction needs our callee to be known
                     # elsewhere: its body fitting exactly one other shipped
@@ -1094,10 +1109,15 @@ def main():
                         unverified += 1
                         continue
                     b_ = resolve(sym2)
+                    o0 = o
                     if b_:
                         # compare symbol bases: our site's addend off both
                         v = (v - (o - b_)) & 0xFFFFFFFF
                         o = b_
+                    if rec is not None and b_ and not (ship.tlo <= v < ship.thi) and \
+                            v in dataof.get(o, ()) and not sym2.startswith("$"):
+                        # (a `$` name is numbered by the compiler, per object)
+                        rec.append(("G", label, name, off, (o0 - b_) & 0xFFFFFFFF, slot_name(b_)))
                     if not (ship.tlo <= v < ship.thi) and o in dataof and dataof[o] and v not in dataof[o]:
                         nbad += 1
                         print("DATA  %s+0x%x (shipped 0x%08x): our 0x%08x %s stands for %s, shipped uses 0x%08x" % (
@@ -1115,6 +1135,10 @@ def main():
         print("spec: %d tables, %d MISSING slots -> %s" % (
             sum(1 for l in spec if l.startswith("vtable")),
             sum(1 for l in spec if "MISSING" in l), opts["--spec"]))
+    if rec is not None:
+        with open(opts["--hashes"], "w", newline="\n") as f:
+            for r in hash_rows(rec):
+                f.write("\t".join(str(x) for x in r) + "\n")
     # a problem is a failure: a caller can gate on the status (but see the
     # README: a table reported is not yet a confirmed broken table for
     # every compiler's output)
@@ -1148,6 +1172,148 @@ def load_known(path, label):
 
 
 KNOWN_FILE = "progress/vtab-known.txt"
+HASH_FILE = "vtab.tsv"
+HASH_HEADER = """\
+## Our vtables and wiring as tools/vtabcheck.py last verified them against the
+## retail images, for the check without them (`vtabcheck.py --targets --ci`;
+## written by `--targets --hashes`). Only symbols of ours and lengths.
+## T <target> <table> <shipped slots> <SHA-256 of our symbols in the slots>
+## W <target> <function> <offsets> <SHA-256 of what they reach>
+##   T: a vtable that the full check compared. The hash is of the symbols our
+##   map gives the slots' functions (the first by name; `?` for none), one a
+##   line. W: the calls and the addresses in a function that the full check
+##   compared. <offsets> is a comma-separated list: `<offset>` for a call (a
+##   rel32), `<offset><+addend>` for an address of a datum. The hash is of
+##   the symbol each reaches (the first by name at that address), one a line.
+"""
+
+
+def names_sha(names):
+    import hashlib
+    return hashlib.sha256("\n".join(names).encode("latin-1")).hexdigest()
+
+
+def hash_rows(rec):
+    """The rows of vtab.tsv from what main() recorded: a table as its
+    length and the hash of its slots' symbols; a function's calls and data
+    references as their offsets and the hash of what they reach."""
+    out, wiring = [], {}
+    for r in rec:
+        if r[0] == "T":
+            _k, label, sym, n, names = r
+            out.append(("T", label, sym, n, names_sha(names)))
+        else:
+            w = wiring.setdefault((r[1], r[2]), {})
+            if r[0] == "K":
+                w[(int(r[3]), None)] = r[4]
+            else:
+                w[(int(r[3]), r[4])] = r[5]
+    for (label, name), w in wiring.items():
+        keys = sorted(w, key=lambda k: k[0])
+        offs = ",".join("%d" % o if a is None else "%d%+d" % (o, a) for o, a in keys)
+        out.append(("W", label, name, offs, names_sha([w[k] for k in keys])))
+    return out
+
+
+def check_ci():
+    """The check without the retail images: every table, call and datum
+    progress/hashes/vtab.tsv records, read from our image through our map,
+    must still be what it was when the full check verified it."""
+    path = os.path.join(REPO, progress.DATA, "hashes", HASH_FILE)
+    if not os.path.exists(path):
+        print("FAIL: no %s: run `make progress-update` with the retail game" % path)
+        return 1
+    rows = {}
+    for line in open(path, encoding="utf-8"):
+        if line.startswith("#") or not line.strip():
+            continue
+        r = line.rstrip("\n").split("\t")
+        rows.setdefault(r[1], []).append(r)
+    import bisect
+    rc = 0
+    for t in progress.TARGETS:
+        label = t["label"]
+        if label not in rows:
+            continue
+        ours = tgt_mod.built(t)
+        mapf = tgt_mod.ourmap(t) if ours else None
+        if not mapf:
+            print("  %s: no build of ours with a map" % label)
+            rc = 1
+            continue
+        our = Img(os.path.join(REPO, ours))
+        s2a, a2s = load_map(os.path.join(REPO, mapf))
+        auto = os.path.join(os.path.dirname(os.path.dirname(ours)), "link", "aliases.rsp")
+        aliases = load_aliases(os.path.join(REPO, auto)) if \
+            os.path.exists(os.path.join(REPO, auto)) else {}
+
+        def resolve(sym):
+            k = 0
+            while sym not in s2a and sym in aliases and k < 10:
+                sym, k = aliases[sym], k + 1
+            return s2a.get(sym)
+
+        starts = sorted(a2s)
+        bad = []
+        n = {"T": 0, "W": 0}
+
+        def first(va):
+            names = sorted(a2s.get(va, ()))
+            return names[0] if names else "?"
+
+        for r in rows[label]:
+            kind = r[0]
+            n[kind] += 1
+            if kind == "T":
+                _k, _l, sym, nslots, want = r
+                ova = resolve(sym)
+                if not ova:
+                    bad.append("%s: not in our map" % sym)
+                    continue
+                i = bisect.bisect_right(starts, ova)
+                nxt = starts[i] if i < len(starts) else ova + 4 * 1000
+                slots = []
+                a = ova
+                while a < nxt and our.is_code(our.dword(a)):
+                    slots.append(our.dword(a))
+                    a += 4
+                if len(slots) < int(nslots):
+                    bad.append("%s: SHORT, %d slots, the shipped table has %s" % (
+                        sym, len(slots), nslots))
+                elif names_sha([first(v) for v in slots[:int(nslots)]]) != want:
+                    bad.append("%s: a slot reaches another function than it did: %s" % (
+                        sym, " ".join(first(v) for v in slots[:int(nslots)])[:300]))
+            else:
+                _k, _l, name, offs, want = r
+                ova = s2a.get(name)
+                if not ova:
+                    bad.append("%s: not in our map" % name)
+                    continue
+                got = []
+                for e in offs.split(","):
+                    m = re.match(r"(\d+)([+-]\d+)?$", e)
+                    off, add = int(m.group(1)), m.group(2)
+                    d = our.dword(ova + off)
+                    if d is None:
+                        got.append("?")
+                    elif add is None:
+                        got.append(first((ova + off + 4 + d) & 0xFFFFFFFF))
+                    else:
+                        got.append(first((d - int(add)) & 0xFFFFFFFF))
+                if names_sha(got) != want:
+                    bad.append("%s: a call or an address in it reaches another "
+                               "symbol than it did (now: %s)" % (name, " ".join(got)[:300]))
+        print("  %s: %d tables and the wiring of %d functions checked; %d changed" % (
+            label, n["T"], n["W"], len(bad)))
+        for b in bad[:40]:
+            print("    " + b)
+        if bad:
+            rc = 1
+    if rc:
+        print("FAIL: a vtable or a call differs from what the full check verified")
+    else:
+        print("PASS: every vtable and call the full check verified is unchanged")
+    return rc
 
 
 def check_targets(opts):
@@ -1157,14 +1323,22 @@ def check_targets(opts):
     under `# REASON` instead (a project taking the check up)."""
     import subprocess
     os.chdir(REPO)
+    if opts.get("--ci"):
+        return check_ci()
     rc = 0
     base = opts.get("--baseline")
     new_known = []
+    hashes = os.path.join(progress.OUT, "hashes", HASH_FILE) if opts.get("--hashes") else None
+    parts = []
     for t in progress.TARGETS:
         if t.get("kind") != "image" or not tgt_mod.built(t) or not tgt_mod.ourmap(t):
             continue
+        extra = []
+        if hashes:
+            parts.append(hashes + "." + re.sub(r"[^\w.-]", "_", t["label"]))
+            extra = ["--hashes=" + parts[-1]]
         r = subprocess.run([sys.executable, os.path.abspath(__file__), t["label"],
-                            "--calls", "--known=progress/vtab-known.txt"],
+                            "--calls", "--known=progress/vtab-known.txt"] + extra,
                            capture_output=True, text=True)
         out = r.stdout.splitlines()
         tail = [l for l in out if l.startswith(("tables with", "wiring problems",
@@ -1180,6 +1354,16 @@ def check_targets(opts):
                     print("    " + l[:240])
                     if (t["label"], m.group(1)) not in new_known:
                         new_known.append((t["label"], m.group(1)))
+    if hashes:
+        rows = []
+        for p in parts:
+            if os.path.exists(p):
+                rows += open(p).read().splitlines()
+                os.unlink(p)
+        with open(hashes, "w", newline="\n") as f:
+            f.write(HASH_HEADER)
+            f.write("".join(r + "\n" for r in rows))
+        print("  wrote %s (%d rows)" % (hashes, len(rows)))
     if base and new_known:
         p = os.path.join(REPO, KNOWN_FILE)
         with open(p, "a", encoding="ascii") as f:
