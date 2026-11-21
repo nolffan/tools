@@ -38,6 +38,14 @@ in progress/data-known.txt; anything else is NEW and fails `make progress`:
                          check fails on anything added from then on while
                          the list stays to be worked through
 
+  datacheck.py check|update --hashes
+                         the same, and the retail images' text recorded as
+                         hashes in out/progress/hashes/data.tsv
+  datacheck.py ci        the check without the retail images: our text
+                         against the hashes of the retail text that
+                         progress/hashes/data.tsv records (a NEW string only
+                         in the retail image is shown by its hash)
+
 progress/data-known.txt: `<image><TAB><retail|ours><TAB><string>`, the
 string written with Python's unicode_escape (so a backslash is doubled);
 `# ...` lines are the reason for the entries that follow them, until the
@@ -47,6 +55,7 @@ its image on that side (an image whose data is known not to match as a
 whole).
 """
 import collections
+import hashlib
 import os
 import re
 import struct
@@ -263,6 +272,78 @@ def differences(only=None):
     return out
 
 
+HASH_FILE = "data.tsv"
+HASH_HEADER = """\
+## The text in the retail images' data, as hashes, for tools/datacheck.py's
+## check without them (`datacheck.py ci`; written by `datacheck.py update
+## --hashes`). No retail text: the SHA-256 of each string (Latin-1), and how
+## many times the image holds it.
+## <image> <SHA-256> <count>
+"""
+
+
+def hs(t):
+    return hashlib.sha256(t.encode("latin-1")).hexdigest()
+
+
+def write_hashes(path):
+    """Every image's retail text as hashes."""
+    rows = []
+    for label, ref, ours in IMAGES:
+        rp = os.path.join(REPO, ref)
+        if not os.path.exists(rp) or not os.path.exists(os.path.join(REPO, ours)):
+            continue
+        for h, n in sorted(collections.Counter(hs(t) for t in Image(rp).text().elements()).items()):
+            rows.append((label, h, n))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="\n") as f:
+        f.write(HASH_HEADER)
+        for r in rows:
+            f.write("\t".join(str(x) for x in r) + "\n")
+    print(f"datacheck.py: wrote {path} ({len(rows)} rows)")
+
+
+def ci():
+    """check, with the retail images' text from progress/hashes/data.tsv:
+    the strings compared by their hashes."""
+    path = os.path.join(REPO, "progress", "hashes", HASH_FILE)
+    if not os.path.exists(path):
+        print(f"FAIL: no {path}: run `make progress-update` with the retail game")
+        return 1
+    retail = {}
+    for line in open(path, encoding="ascii"):
+        if line.startswith("#") or not line.strip():
+            continue
+        label, h, n = line.rstrip("\n").split("\t")
+        retail.setdefault(label, collections.Counter())[h] = int(n)
+    diff, names = {}, {}
+    for label, _ref, ours in IMAGES:
+        if label not in retail:
+            continue
+        b = Image(os.path.join(REPO, ours)).text()
+        for t in b:
+            names[hs(t)] = t
+        bh = collections.Counter({hs(t): n for t, n in b.items()})
+        diff[(label, "retail")] = retail[label] - bh
+        diff[(label, "ours")] = bh - retail[label]
+    known = []
+    for image, side, t, reason in load_known():
+        known.append((image, side, t if t == "*" else hs(t), reason))
+    new, fixed = compare(diff, known)
+    # the strings of ours by name; the retail ones only by hash
+    show = lambda c: collections.Counter({(i, sd, names.get(h, "<SHA-256 " + h + ">")): n
+                                          for (i, sd, h), n in c.items()})
+    shown = {k: collections.Counter({names.get(h, "<SHA-256 " + h + ">"): n
+                                     for h, n in c.items()}) for k, c in diff.items()}
+    report(shown, show(new), show(fixed))
+    if new:
+        print(f"FAIL: {sum(new.values())} new text difference(s) from the retail "
+              f"images; fix them, or list them with their reason in {KNOWN}")
+        return 1
+    print("PASS: every text difference from the retail images is a known one")
+    return 0
+
+
 def compare(diff, known):
     """(new, fixed): differences not in the list, and list entries (as
     (image, side, string)) that no longer differ. An entry whose string is
@@ -364,8 +445,12 @@ def main():
                     f.write(f"{image}\t{side}\t{esc(t)}\n")
         print(f"datacheck.py: {sum(new.values())} difference(s) recorded in {KNOWN}")
         return 0
+    if cmd == "ci":
+        return ci()
     if cmd not in ("check", "update"):
         sys.exit(__doc__)
+    if "--hashes" in args:
+        write_hashes(os.path.join(REPO, "out", "progress", "hashes", HASH_FILE))
     known = load_known()
     diff = differences()
     new, fixed = compare(diff, known)

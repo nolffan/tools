@@ -95,7 +95,7 @@ Usage:
   progress.py [--nears[=target]]
               [--todo|--attempted|--near|--small|--unplaced|--unreferenced|
                --unlinked|--driver[=target]]
-              [--refuted[=target]]
+              [--refuted[=target]] [--hashes]
 
 --nears prints the near-match worklist instead of the summary: one line per
 paired function with the shipped address, both sizes and the byte delta,
@@ -103,9 +103,13 @@ closest first. That order is the order to work them in -- a function that is
 already size-exact usually needs one source change, where one off by a
 hundred bytes needs a different shape. --todo (and the other statuses) list
 that status's rows, largest first.
+
+--hashes also writes out/progress/hashes/identical.tsv: each identical row
+as tools/hashcheck.py checks it without the retail binaries (see there).
 """
 import bisect
 import csv
+import itertools
 import glob
 import json
 import os
@@ -128,6 +132,14 @@ PLACED_SYMS = {}
 # shape): (label, shipped address) -> "module:symbol". Weaker evidence
 # than PLACED_SYMS, so kept apart.
 SMALL_SYMS = {}
+# The rows scored identical, as tools/hashcheck.py records them (--hashes):
+# label -> [row]. None unless --hashes is given.
+HASHES = None
+# (label, shipped address) -> our address, for the functions the linked
+# oracle (linked_oracle) matched in our own image.
+LINKED_AT = {}
+# label -> the identical rows --hashes could not record (_hash_rows)
+HASH_LOST = {}
 # The small functions whose relocated operands, compared through the
 # address mapping the identical functions prove, name something else at
 # their placement: (label, shipped address, ours, offset, our operand,
@@ -374,6 +386,10 @@ def rows_for_lib(label, ours_path, libdir):
         else:
             status = "near"
         rows.append((label, name, len(code), status))
+        if HASHES is not None and status == "identical":
+            import hashcheck
+            HASHES.setdefault(label, []).append(
+                ("L", label, name, len(code), hashcheck.sha(code)))
     return rows
 
 
@@ -2277,6 +2293,7 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                 if b and 0 <= o and linked[o:o + n] == b:
                     matched[a] = n
                     linked_ours.add(a)
+                    LINKED_AT[(label, a)] = a
                 continue
             if b and b in linked:
                 matched[a] = n
@@ -2285,6 +2302,7 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                 # can have these bytes), else the first
                 o = a - ltva
                 linked_ours.add(a if linked[o:o + n] == b else ltva + linked.find(b))
+                LINKED_AT[(label, a)] = a if linked[o:o + n] == b else ltva + linked.find(b)
 
     # Global-initializer COMDATs ($E thunks, the ??__E constructors and the
     # atexit registrations) are almost entirely relocation bytes: a `call
@@ -3577,8 +3595,87 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
     if over:
         print(f"  {label}: WARNING: {len(over)} counted row(s) overlap the "
               f"one before: {', '.join(over[:8])}", file=sys.stderr)
+    if HASHES is not None:
+        HASHES[label] = _hash_rows(tgt, rows, funcs, unpadded, text, tva, layout)
     return rows
 
+
+def _hash_rows(tgt, rows, funcs, unpadded, text, tva, layout):
+    """The C rows of tools/hashcheck.py for the identical rows of an image:
+    where each is in our link, what its comparison masks, and the hash of
+    the shipped bytes with that masked. Each row is checked here against
+    our build first, as the check will read it: a row that would not pass
+    is left out, and counted in HASH_LOST."""
+    import hashcheck
+    label = tgt["label"]
+    ours = built_image(tgt)
+    HASH_LOST[label] = []
+    if not ours or not layout:
+        return []
+    ope = Pe(os.path.join(REPO, ours))
+    lay = hashcheck.Layout(layout)
+    otva, otvs, otrp = ope.secs[".text"]
+    our_text = ope.d[otrp:otrp + otvs]
+    out = []
+
+    def at(va, length, mask, want):
+        oo = ope.va2off(va)
+        return oo is not None and \
+            hashcheck.masked_sha(ope.d[oo:oo + length], mask) == want
+
+    for _l, name, size, st in rows:
+        if st != "identical" or not name.startswith("sub_"):
+            continue
+        a = int(name[4:], 16)
+        n = PLACED_SYMS.get((label, a))
+        o = a - tva
+        if (label, a) in LINKED_AT:
+            # the linked oracle: our image's bytes, nothing masked
+            va, length, mask = LINKED_AT[(label, a)], size, set()
+            want = hashcheck.sha(text[o:o + length])
+            loc = lay.locator(va, n)
+            if loc and lay.resolve(loc) == va and at(va, length, mask, want):
+                out.append(("C", label, "%08x" % a, length, loc, "-", want))
+            else:
+                HASH_LOST[label].append(name)
+            continue
+        code = None
+        for c, m in ([funcs[n]] + ([unpadded[n]] if n in unpadded else [])) \
+                if n in funcs else []:
+            if 0 <= o and o + len(c) <= len(text) and all(
+                    i in m or text[o + i] == c[i] for i in range(len(c))):
+                code, mask = c, set(m)
+                break
+        if code is None:
+            HASH_LOST[label].append(name)
+            continue
+        length = len(code)
+        want = hashcheck.masked_sha(text[o:o + length], mask)
+        # where it is in our link: by its name in our map; by its name in
+        # another module, if only one has it; or, folded there by our link
+        # (/OPT:ICF), at the start of another function of the same bytes
+        mod, sym = n.split(":", 1)
+        named = [layout.get((mod.lower(), sym))]
+        if len(lay.by_sym.get(sym, ())) == 1:
+            named.append(next(iter(lay.by_sym[sym])))
+        loc = None
+        for va in itertools.chain(named, (h for h in find(our_text, otva, code, mask)
+                                          if h in lay.at)):
+            if va is not None and at(va, length, mask, want):
+                loc = lay.locator(va, n)
+                if loc and lay.resolve(loc) == va:
+                    break
+                loc = None
+        if loc is None and hashcheck.masked_sha(code, mask) == want:
+            # not in our link (our link dropped it, or linked another
+            # object's copy of the name): the object's own code, as the
+            # scoring compares it
+            loc = "obj:" + n
+        if loc is None:
+            HASH_LOST[label].append(name)
+            continue
+        out.append(("C", label, "%08x" % a, length, loc, hashcheck.fmt_mask(mask), want))
+    return out
 
 def _resources(path):
     """{(type, name, language): data} of a PE image's resources."""
@@ -3643,6 +3740,10 @@ def rows_for_resources(tgt, ours):
         else:
             status = "near"
         rows.append((label, "rsrc:" + "/".join(str(k) for k in key), len(data), status))
+        if HASHES is not None and status == "identical":
+            import hashcheck
+            HASHES.setdefault(label, []).append(
+                ("R", label, rows[-1][1], len(data), hashcheck.sha(data)))
     return rows
 
 
@@ -3810,10 +3911,27 @@ def score_target(tgt):
         # in it is identical, however little of it the masked match could
         # prove (a short function, or one whose relocations alone differ).
         WHOLE_IMAGE.add(tgt["label"])
+        if HASHES is not None:
+            _hash_whole(tgt, ours, rows)
         rows = [(l, n, size, "identical" if st in ("near", "small", "todo",
                                                     "attempted") else st)
                 for l, n, size, st in rows]
     return rows, ours
+
+
+def _hash_whole(tgt, ours, rows):
+    """C rows for the functions only the whole image's identity makes
+    identical: at the same address in our image, nothing masked."""
+    import hashcheck
+    label = tgt["label"]
+    pe = Pe(os.path.join(REPO, tgt["shipped"]))
+    for _l, n, size, st in rows:
+        if st in ("near", "small", "todo", "attempted") and n.startswith("sub_"):
+            a = int(n[4:], 16)
+            o = pe.va2off(a)
+            HASHES.setdefault(label, []).append(
+                ("C", label, "%08x" % a, size, "@0x%08x" % a, "-",
+                 hashcheck.sha(pe.d[o:o + size])))
 
 
 WHOLE_IMAGE = set()     # the labels of targets whose image is retail's
@@ -3838,7 +3956,13 @@ def whole_image_identical(tgt, ours):
 
 
 def main():
+    global HASHES
     os.chdir(REPO)
+    if "--hashes" in sys.argv[1:]:
+        # the identical rows as hashes too (tools/hashcheck.py), into
+        # out/progress/hashes/
+        sys.argv.remove("--hashes")
+        HASHES = {}
 
     # A missing reference image would silently drop its target from the
     # totals; refuse instead.
@@ -3992,6 +4116,15 @@ def main():
     with open(os.path.join(OUT, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2, sort_keys=True)
         f.write("\n")
+    if HASHES is not None:
+        import hashcheck
+        hrows = [r for label in sorted(HASHES) for r in HASHES[label]]
+        hashcheck.write(os.path.join(OUT, "hashes", hashcheck.FILE), hrows)
+        print(f"wrote {OUT}/hashes/{hashcheck.FILE} ({len(hrows)} rows)")
+        for label, lost in sorted(HASH_LOST.items()):
+            if lost:
+                print(f"  {label}: WARNING: {len(lost)} identical row(s) not "
+                      f"hashed: {', '.join(lost[:8])}")
 
     print(f"{'target':<18} {'ident':>6} {'near':>5} {'small':>6} "
           f"{'attem':>6} {'todo':>5} "

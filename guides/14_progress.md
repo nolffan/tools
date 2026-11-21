@@ -140,6 +140,69 @@ It refuses two kinds of run:
   the right source compiles differently) -- record it with
   `make progress-update ACCEPT_LOSSES=1` and say why in the commit message.
 
+## Checking without the retail binaries: hashes
+
+`make progress` needs the retail binaries. A machine that does not have
+the retail game (for example a CI runner) cannot run it. For such a
+machine, a project can record the full check as hashes, and check its
+build against these hashes. This is opt-in: a project that does not use
+`--hashes` sees no change.
+
+To record, give `--hashes` to each check in the project's
+`progress-update`:
+
+```sh
+python3 tools/progress.py --hashes          # out/progress/hashes/identical.tsv
+python3 tools/datacheck.py update --hashes  # out/progress/hashes/data.tsv
+python3 tools/fpconst.py --targets --hashes # out/progress/hashes/fpconst.tsv
+python3 tools/vtabcheck.py --targets --hashes   # out/progress/hashes/vtab.tsv
+```
+
+When all the checks pass, copy `out/progress/hashes/` to `progress/hashes/`
+and commit it with `progress/identical.txt`. The files hold no retail
+bytes:
+
+* `identical.tsv`: for each identical function, its shipped address and
+  length, where it is in our link (a symbol of our `.map`), the offsets the
+  comparison masks (the relocations), and the SHA-256 of the shipped bytes
+  with those offsets set to zero. For each identical resource and library
+  function, the SHA-256 of the shipped data.
+* `data.tsv`: the SHA-256 of each string in the retail images' data, with
+  its count.
+* `fpconst.tsv`: the SHA-256 of each float constant behind a masked
+  relocation.
+* `vtab.tsv`: for each vtable that `vtabcheck.py` compared, its shipped
+  length and a hash of the symbols in our slots; for each function whose
+  calls and addresses it compared, the offsets and a hash of the symbols
+  they reach.
+
+To check, without the retail binaries:
+
+```sh
+python3 tools/hashcheck.py check [--no-art]
+python3 tools/datacheck.py ci
+python3 tools/fpconst.py --targets --ci
+python3 tools/vtabcheck.py --targets --ci
+```
+
+Each one reads only our build and `progress/hashes/`. `hashcheck.py` finds
+each recorded function in our image through our `.map`, hashes it with the
+recorded mask and compares. It fails if a hash differs, if a function is
+not in our map, or if `progress/identical.txt` has a function with no
+hash. `--no-art` does not check the resources that a target's `art` key
+names (regular expressions on `rsrc:<type>/<name>/<language>`): a build
+without the retail game compiles placeholder art in their place.
+
+Know these limits:
+
+* The check finds no new match. Only the full `make progress-update` with
+  the retail binaries records one.
+* A renamed function or symbol is not in the recorded data. After a rename,
+  run `make progress-update` again.
+* `vtab.tsv` records our symbols as the full check verified them. If a slot
+  or a call reaches another symbol of ours, the check fails, also where the
+  full check would only report the slot as unverified.
+
 ## Reading a run
 
 `out/progress/functions.csv` has one row per shipped function: target,
