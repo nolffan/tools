@@ -18,7 +18,9 @@ engine where the PC has d3d.ren. This reads all of that:
                                            transition vector) or call it
   tools/pef.py imports <pef> [regex]       imported symbols and their library
 
-<pef> defaults to the Mac engine when given as "-". A name argument matches
+<pef> defaults to the Mac engine when given as "-": NOLF/LithTech in the
+directory $NOLF_MAC_DIR names (the installed Mac release), else in
+rez/games/nolf-mac-usa/ beside the tools. A name argument matches
 a function whose mangled name starts with it (r_Start3D matches
 r_Start3D__Fv). Addresses are offsets into the code section.
 
@@ -51,7 +53,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from layout import sibling  # noqa: E402
 
-DEFAULT = os.path.join(sibling("rez"), "games", "nolf-mac-usa", "NOLF", "LithTech")
+DEFAULT = os.path.join(os.environ.get("NOLF_MAC_DIR") or
+                       os.path.join(sibling("rez"), "games", "nolf-mac-usa"),
+                       "NOLF", "LithTech")
 
 
 def vnum(b, i):
