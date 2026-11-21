@@ -25,8 +25,16 @@ Usage:
   fpconst.py out/reference/server.dll src/engine/server/Release
   fpconst.py --targets      every built image target in progress/targets.py
                             (its link's objects): `make progress` runs this
+  fpconst.py --targets --hashes
+                            the same, and every constant it checks recorded
+                            as a hash in out/progress/hashes/fpconst.tsv
+  fpconst.py --targets --ci the check without the shipped images: our
+                            constant behind each relocation that file
+                            records, against the recorded hash (from
+                            progress/hashes/)
 """
 import glob
+import hashlib
 import os
 import struct
 import sys
@@ -121,8 +129,10 @@ def func_syms(data, secs, symoff, nsyms):
     return out
 
 
-def check(image, objs, out=sys.stdout):
-    """(operands checked, mismatched, unknown) for our objects in image."""
+def check(image, objs, out=sys.stdout, rec=None):
+    """(operands checked, mismatched, unknown) for our objects in image.
+    rec, a list: each operand checked is appended to it as (module,
+    function, offset, width, the SHA-256 of the shipped constant)."""
     pe = Pe(image)
     tva, tvs, trp = pe.secs[".text"]
     text = pe.d[trp:trp + tvs]
@@ -194,6 +204,9 @@ def check(image, objs, out=sys.stdout):
                 if not theirs or len(theirs) != width:
                     continue
                 checked += 1
+                if rec is not None:
+                    rec.append((os.path.basename(path), sym, fn_off, width,
+                                hashlib.sha256(theirs).hexdigest()))
                 if ours != theirs:
                     bad += 1
                     f = "<f" if width == 4 else "<d"
@@ -211,39 +224,153 @@ def summary(checked, bad, unknown):
                f"read, unchecked" if unknown else ""))
 
 
-def check_targets():
+def target_objs(tgt_mod, t):
+    """The objects of a target's link, a library's as (`lib(member)`,
+    bytes)."""
+    objs = []
+    for o in tgt_mod.progress.image_objs(t, tgt_mod.built(t)):
+        if o.lower().endswith(".obj"):
+            objs.append(o)
+        elif o.lower().endswith(".lib"):
+            # a library of ours is checked member by member
+            stem = os.path.splitext(os.path.basename(o))[0]
+            with tempfile.TemporaryDirectory() as td:
+                extract(o, td)
+                objs += [("%s(%s)" % (stem, os.path.basename(m)), open(m, "rb").read())
+                         for m in sorted(glob.glob(td + "/*"))]
+    return objs
+
+
+HASH_FILE = "fpconst.tsv"
+HASH_HEADER = """\
+## The floating-point constants tools/fpconst.py last checked against the
+## retail images, for the check without them (`fpconst.py --targets --ci`;
+## written by `--targets --hashes`). No retail bytes: SHA-256 hashes.
+## <target> <module> <function> <offset> <width> <SHA-256 of the shipped constant>
+"""
+
+
+def check_targets(hashes=False):
     """Every built image target of progress/targets.py, its link's objects
     against its shipped image: what `make progress` runs."""
     import tgt as tgt_mod
     os.chdir(tgt_mod.REPO)
     bad_total = 0
+    rows = []
     for t in tgt_mod.cfg.TARGETS:
         if t.get("kind") != "image" or not tgt_mod.built(t):
             continue
-        objs = []
-        for o in tgt_mod.progress.image_objs(t, tgt_mod.built(t)):
-            if o.lower().endswith(".obj"):
-                objs.append(o)
-            elif o.lower().endswith(".lib"):
-                # a library of ours is checked member by member
-                with tempfile.TemporaryDirectory() as td:
-                    extract(o, td)
-                    objs += [(os.path.basename(m), open(m, "rb").read())
-                             for m in sorted(glob.glob(td + "/*"))]
+        objs = target_objs(tgt_mod, t)
         if not objs:
             continue
         shipped = t["shipped"]
         if t.get("readable") and os.path.exists(t["readable"]):
             shipped = t["readable"]
-        checked, bad, unknown = check(shipped, objs)
+        rec = [] if hashes else None
+        checked, bad, unknown = check(shipped, objs, rec=rec)
+        rows += [(t["label"],) + r for r in rec or ()]
         bad_total += bad
         print(f"  {t['label']}: " + summary(checked, bad, unknown))
+    if hashes:
+        p = os.path.join(tgt_mod.progress.OUT, "hashes", HASH_FILE)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", newline="\n") as f:
+            f.write(HASH_HEADER)
+            for r in rows:
+                f.write("\t".join(str(x) for x in r) + "\n")
+        print(f"  wrote {p} ({len(rows)} rows)")
+    return 1 if bad_total else 0
+
+
+def our_constants(data):
+    """{(function, offset): constant bytes} of one object of ours: the
+    constant behind every DIR32 that is the displacement of an x87 read,
+    as check() finds them, without a shipped image."""
+    out = {}
+    fns = parse_obj_masked(data)
+    secs, symoff, nsyms = sections(data)
+    home = {n: (si, val) for n, si, val in func_syms(data, secs, symoff, nsyms)}
+    relbysec = {}
+    for si, (name, rawsz, rawp, relp, nrel, flags) in enumerate(secs, 1):
+        if flags & 0x20 and relp:
+            relbysec[si] = [struct.unpack_from("<IIH", data, relp + i * 10)
+                            for i in range(nrel)]
+    for sym, (code, mask) in fns.items():
+        if sym not in home:
+            continue
+        si, symval = home[sym]
+        owner = {}
+        for ins in walk(code):
+            if ins.disp_off is not None and ins.disp_len == 4:
+                owner[ins.disp_off] = ins
+        for vaddr, symidx, typ in relbysec.get(si, []):
+            fn_off = vaddr - symval
+            ins = owner.get(fn_off)
+            if not (0 <= fn_off < len(code)) or fn_off not in mask or ins is None:
+                continue
+            width = x87_width(ins)
+            if not width or typ != DIR32:
+                continue
+            addend = struct.unpack_from("<i", code, fn_off)[0]
+            c = const_at(data, secs, symoff, nsyms, symidx, addend, width)
+            if c is not None:
+                out[(sym, fn_off)] = c
+    return out
+
+
+def check_ci():
+    """Our constants against the hashes progress/hashes/fpconst.tsv
+    records: exit 1 on one that differs or is no longer there."""
+    import tgt as tgt_mod
+    os.chdir(tgt_mod.REPO)
+    path = os.path.join(tgt_mod.progress.DATA, "hashes", HASH_FILE)
+    if not os.path.exists(path):
+        print(f"FAIL: no {path}: run `make progress-update` with the retail game")
+        return 1
+    want = {}
+    for line in open(path, encoding="utf-8"):
+        if line.startswith("#") or not line.strip():
+            continue
+        label, mod, sym, off, width, h = line.rstrip("\n").split("\t")
+        want.setdefault(label, {}).setdefault(mod, []).append((sym, int(off), int(width), h))
+    bad_total = 0
+    for t in tgt_mod.cfg.TARGETS:
+        if t["label"] not in want:
+            continue
+        if not tgt_mod.built(t):
+            print(f"  {t['label']}: no build of ours")
+            bad_total += 1
+            continue
+        mods = {}
+        for o in target_objs(tgt_mod, t):
+            name, data = o if isinstance(o, tuple) else (os.path.basename(o), open(o, "rb").read())
+            if name in want[t["label"]]:
+                mods[name] = data
+        checked = bad = 0
+        for mod, rows in sorted(want[t["label"]].items()):
+            consts = our_constants(mods[mod]) if mod in mods else {}
+            for sym, off, width, h in rows:
+                checked += 1
+                c = consts.get((sym, off))
+                if c is None or len(c) != width or hashlib.sha256(c).hexdigest() != h:
+                    bad += 1
+                    what = "gone" if c is None else repr(struct.unpack(
+                        "<f" if len(c) == 4 else "<d", c)[0])
+                    print(f"MISMATCH {mod} {sym}\n    +0x{off:x}: ours {what}, "
+                          f"not the recorded shipped constant")
+        bad_total += bad
+        print(f"  {t['label']}: {checked} recorded floating-point operand(s) "
+              f"checked, {bad} differ")
     return 1 if bad_total else 0
 
 
 def main():
     if sys.argv[1:] == ["--targets"]:
         return check_targets()
+    if sys.argv[1:] == ["--targets", "--hashes"]:
+        return check_targets(hashes=True)
+    if sys.argv[1:] == ["--targets", "--ci"]:
+        return check_ci()
     if len(sys.argv) < 3:
         sys.exit(__doc__)
     objs = []
