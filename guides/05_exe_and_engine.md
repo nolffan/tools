@@ -146,6 +146,69 @@ against a cdecl allocator (plain `ret`), and the game crashed on load; of the
 functions a return-style check then flagged, two were real bugs in the
 reconstruction. Compare the return instructions before believing a pairing.
 
+**Boot early.** This rule is not only for nears. The scorer *places* some
+items and does not prove them. Examples are a vtable slot, a struct size
+and a link-time binding. Only a run of the game checks these items.
+
+Boot the game on your build when it first links. Then boot it again after
+each change. Use Xvfb and Wine with scripted input:
+
+- `tools/playtest.sh` and its `playtest-*.txt` input scripts.
+- avp2src's `build/playtest.sh`, which adapts the script for each game.
+  `make test` runs it.
+
+AvP2 and Primal Hunt first showed only a black screen on our engines. The
+work to get them to their first levels found these problems, and others
+(avp2src f244290, 27eb79d, baebb5b):
+
+* **Vtable twins with identical masked bytes.** The scorer put `GetNode`
+  of `ILTModel` at the address of `GetSocket`, and `GetSocket` at the
+  address of `GetNode`. The `CreateString` slot of `ILTServer` contained
+  `LAlloc::Alloc`. All the bytes matched, but the calls went to the wrong
+  function.
+* **A base stub beating the override.** The table of `CObjWorldModel` kept
+  the empty `OnFoundInBox` of `CObjBase`. Thus the world tree did not get
+  to the renderer. The world was black, but nothing crashed.
+* **An undersized struct overwriting globals.** The declaration of
+  `g_FormatMgr` in d3d.ren gave 0x9a8 bytes, but the correct size is
+  0xb94. The scale tables of its constructor wrote over the texture
+  globals after it. Also, `ViewParams` in `d3d_drawsky.cpp` was 0x4cc
+  bytes, not 0x4f8, and it wrote over a sky-portal handle.
+
+The vtable rules from these problems are in [07](07_vtables.md#when-placement-votes-ties-and-twins).
+
+**A behaviour test needs a retail-vs-retail control.** A comparison of our
+output with the retail output is correct only where two retail runs give
+the same output. Uninitialised data depends on the heap. The heap depends
+on very small things, for example the length of the path of the exe.
+
+For example, the Processor.exe comparison of lithtools passed only when
+the name of our exe had the same length as the name of the shipped exe.
+The cause is that the T-junction splits of the physics BSP write
+uninitialised vertex colours (lithtools `legacy/talon/docs/PLAN.md`,
+"Behaviour"). Thus the harness now runs the shipped exe a second time
+from a longer path.
+
+An exception to the comparison is correct only if the two retail runs
+also need it. On Sample_DM, the two retail runs are different in 2,637
+colour bytes of 519 polies. Some of these bytes are all 255 in one run
+and random values in the other run. Thus "uninitialised in both" was not
+a correct rule (lithtools 59a7aac). Record such a difference in
+`RETAIL_BUGS.md`. Do not make the comparison less strict until it passes.
+
+**A `/FORCE` link does not run.** Sometimes we link an image with
+unresolved symbols, for the scoreboard, while the engine is not complete.
+VC6's linker then resolves each of these symbols to the image base. Thus
+the first call to one of them jumps to 0x00400000 and executes the bytes
+of the PE header. The result is an illegal instruction at 0x0040000C. This
+often occurs in a static constructor before `WinMain`.
+
+For example, in avp2src, the `CConsoleView` constructor for the global
+`g_Console` called a `CConsoleCritSec` constructor that no object defined.
+Use such an image only for the score. For the effect on the scorer, and
+how avp2src bound its symbols to run the image, see
+[14](14_progress.md#links-with-force).
+
 ## The engine binaries
 
 `lithtech.exe`, `d3d.ren` and `server.dll` are the bulk of the work — about
