@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read a classic Mac OS PEF executable: the Mac release's LithTech engine.
 
-The Mac NOLF (rez/games/nolf-mac-usa/NOLF/LithTech, Hyperion's 2002 port)
+The Mac NOLF (NOLF/LithTech of the installed release, Hyperion's 2002 port)
 is a PowerPC PEF ("Preferred Executable Format") application built with
 CodeWarrior. CodeWarrior keeps each function's name, C++-mangled, in the
 traceback table it writes after the function, so the engine is named
@@ -18,9 +18,9 @@ engine where the PC has d3d.ren. This reads all of that:
                                            transition vector) or call it
   tools/pef.py imports <pef> [regex]       imported symbols and their library
 
-<pef> defaults to the Mac engine when given as "-": NOLF/LithTech in the
-directory $NOLF_MAC_DIR names (the installed Mac release), else in
-rez/games/nolf-mac-usa/ beside the tools. A name argument matches
+<pef> is the Mac engine when given as "-": NOLF/LithTech in the directory
+that $NOLF_MAC_DIR names (the Mac release, installed from your own disc;
+nolfsrc's src/modern/render/README.md). A name argument matches
 a function whose mangled name starts with it (r_Start3D matches
 r_Start3D__Fv). Addresses are offsets into the code section.
 
@@ -50,12 +50,14 @@ import re
 import struct
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import sibling  # noqa: E402
 
-DEFAULT = os.path.join(os.environ.get("NOLF_MAC_DIR") or
-                       os.path.join(sibling("rez"), "games", "nolf-mac-usa"),
-                       "NOLF", "LithTech")
+def mac_engine():
+    """The Mac engine, for a <pef> of "-": NOLF/LithTech in $NOLF_MAC_DIR."""
+    d = os.environ.get("NOLF_MAC_DIR")
+    if not d:
+        sys.exit("pef.py: \"-\" needs $NOLF_MAC_DIR, the directory of the installed "
+                 "Mac release (it holds NOLF/LithTech)")
+    return os.path.join(d, "NOLF", "LithTech")
 
 
 def vnum(b, i):
@@ -392,7 +394,7 @@ def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
     cmd, path = sys.argv[1], sys.argv[2]
-    pef = PEF(DEFAULT if path == "-" else path)
+    pef = PEF(mac_engine() if path == "-" else path)
     arg = sys.argv[3] if len(sys.argv) > 3 else None
     if cmd == "info":
         for s in pef.sections:

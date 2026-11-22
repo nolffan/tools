@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reader for the Mac NOLF2 engine: a Mach-O PowerPC image, not stripped.
 
-The Mac release of NOLF2 (2003, rez's `nolf2-mac-usa`) is Mach-O for Mac OS X,
+The Mac release of NOLF2 (2003, USA) is Mach-O for Mac OS X,
 built with Apple's GCC 3.1. Its engine, NOLF2.app/Contents/MacOS/NOLF2, and the
 dedicated server's engine, NOLF2Srv.app/Contents/Resources/server.dll/
 Contents/MacOS/server, keep their symbol tables: every function of the engine
@@ -17,10 +17,9 @@ inventory in progress/engine/ from it).
     tools/macho.py demangle <name>...      the demangler on its own
 
 [file] is a path, or `engine` (the default) or `server`, which resolve under
-rez/games/nolf2-mac-usa, in the rez submodule beside the tools (`--root <dir>`
-or $NOLF2SRC_MAC for another install).
-Install it with `rez/fetch-isos.sh nolf2-mac-usa && rez/install-games.sh
-nolf2-mac-usa` (the two USA Mac discs).
+the installed Mac release (from your own two USA Mac discs). Give its
+directory with `--root <dir>` or $NOLF2SRC_MAC: one of the two is necessary
+for `engine` and `server`.
 
 Plain Python 3, no dependencies. The demangler (`demangle()`) follows the
 Itanium C++ ABI and prints what binutils' c++filt prints for every name in
@@ -32,10 +31,6 @@ import re
 import struct
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import sibling  # noqa: E402
-
-ROOT_DEFAULT = os.path.join(sibling("rez"), "games", "nolf2-mac-usa")
 KNOWN = {
     "engine": "NOLF2.app/Contents/MacOS/NOLF2",
     "server": "NOLF2Srv.app/Contents/Resources/server.dll/Contents/MacOS/server",
@@ -51,7 +46,10 @@ S_TYPE_MASK, S_SYMBOL_STUBS = 0xff, 0x8
 def resolve(arg, root=None):
     """A file argument: a path, or `engine` / `server` under the Mac install."""
     if arg in KNOWN:
-        root = root or os.environ.get("NOLF2SRC_MAC") or ROOT_DEFAULT
+        root = root or os.environ.get("NOLF2SRC_MAC")
+        if not root:
+            sys.exit("macho.py: %s needs the Mac release's directory: give --root <dir> "
+                     "or $NOLF2SRC_MAC" % arg)
         return os.path.join(root, KNOWN[arg])
     return arg
 

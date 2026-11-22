@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The Mac NOLF2 engine's functions, each with the source file it belongs to.
 
-    tools/macinventory.py --jupiter <Dev/Source> [--root <nolf2-mac-usa>] [--out progress/engine]
+    tools/macinventory.py --jupiter <Dev/Source> --root <mac-release> [--out progress/engine]
 
 writes, deterministically (the same inputs give the same bytes):
 
@@ -12,9 +12,9 @@ writes, deterministically (the same inputs give the same bytes):
                             Mac classes the Jupiter tree has no file for
 
 <Dev/Source> is the F.E.A.R. source tree's Dev/Source (its `runtime/` is
-LithTech Jupiter, NOLF2's engine line: docs/engine/fear_mapping.md). The Mac
-release comes from `rez/fetch-isos.sh nolf2-mac-usa && rez/install-games.sh
-nolf2-mac-usa`; --root defaults to rez/games/nolf2-mac-usa.
+LithTech Jupiter, NOLF2's engine line: docs/engine/fear_mapping.md).
+<mac-release> is the directory of the Mac release (USA), installed from your
+own discs. --root is necessary unless $NOLF2SRC_MAC gives the directory.
 
 Columns: addr, size (to the next symbol: includes alignment padding),
 section (__text: in object order; __textcoal_nt: coalesced templates and
@@ -566,8 +566,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--jupiter", required=True,
                     help="the F.E.A.R. tree's Dev/Source (runtime/, libs/, sdk/)")
-    ap.add_argument("--root", default=os.environ.get("NOLF2SRC_MAC", macho.ROOT_DEFAULT),
-                    help="the nolf2-mac-usa install")
+    env = os.environ.get("NOLF2SRC_MAC")
+    ap.add_argument("--root", default=env, required=not env,
+                    help="the Mac release's directory (default: $NOLF2SRC_MAC)")
     ap.add_argument("--out", default="progress/engine")
     a = ap.parse_args()
     index, jfiles = jupiter_index(a.jupiter)
