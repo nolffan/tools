@@ -1204,6 +1204,56 @@ def names_sha(names):
     return hashlib.sha256("\n".join(anon(n) for n in names).encode("latin-1")).hexdigest()
 
 
+VC71_ANON = re.compile(r"\?A0x([0-9a-f]+)@")
+
+
+def vc71_hashes(recorded, ours, label, mapf):
+    """{recorded hash: our hash} of VC7.1's anonymous namespaces
+    (`?A0x<hash>@`, one hash per source file, which differs from one build
+    to the next). A function of the same name can be in the anonymous
+    namespaces of two files, so the name alone does not say which is
+    which. A recorded hash goes to the hash of ours of the same object
+    file: progress/hashes/identical.tsv names the object of each recorded
+    symbol, and our .map the object of each of ours. Else, to the one hash
+    of ours whose namespace has every name that the recorded symbols of
+    that hash have."""
+    rec_mod, our_mod = {}, {}
+    ident = os.path.join(REPO, progress.DATA, "hashes", "identical.tsv")
+    if os.path.exists(ident):
+        for line in open(ident, encoding="utf-8"):
+            f = line.rstrip("\n").split("\t")
+            if len(f) > 4 and f[1] == label and ":?" in f[4]:
+                # [obj:|lib:<lib>:]<object>:<symbol>
+                at = f[4].index(":?")
+                mod = f[4][:at].split(":")[-1]
+                for h in VC71_ANON.findall(f[4][at + 1:]):
+                    rec_mod[h] = mod.lower()
+    for line in open(mapf, errors="replace"):
+        f = line.split()
+        if len(f) >= 4 and VC71_ANON.search(f[1]):
+            mod = f[-1].split(":")[-1].lower()
+            for h in VC71_ANON.findall(f[1]):
+                our_mod.setdefault(mod, set()).add(h)
+
+    def groups(names):
+        out = {}
+        for n in names:
+            for h in VC71_ANON.findall(n):
+                out.setdefault(h, set()).add(anon(n))
+        return out
+    mine = groups(ours)
+    out = {}
+    for h, names in groups(recorded).items():
+        if h in mine:
+            continue                                  # the same build
+        cand = sorted(our_mod.get(rec_mod.get(h), ()))
+        if len(cand) != 1:
+            cand = [g for g, have in mine.items() if names <= have]
+        if len(cand) == 1:
+            out[h] = cand[0]
+    return out
+
+
 def hash_rows(rec):
     """The rows of vtab.tsv from what main() recorded: a table as its
     length and the hash of its slots' symbols; a function's calls and data
@@ -1261,11 +1311,17 @@ def check_ci():
         by_anon = {}
         for n_, a_ in s2a.items():
             by_anon.setdefault(anon(n_), set()).add(a_)
+        hashes = vc71_hashes([r[2] for r in rows[label]], s2a, label,
+                             os.path.join(REPO, mapf))
 
         def resolve(sym):
             k = 0
             while sym not in s2a and sym in aliases and k < 10:
                 sym, k = aliases[sym], k + 1
+            if sym not in s2a and VC71_ANON.search(sym):
+                mine = VC71_ANON.sub(lambda m: "?A0x%s@" % hashes.get(m.group(1), m.group(1)), sym)
+                if mine in s2a:
+                    return s2a[mine]                      # another build's hash
             if sym not in s2a and len(by_anon.get(anon(sym), ())) == 1:
                 return next(iter(by_anon[anon(sym)]))      # another build's name
             return s2a.get(sym)
