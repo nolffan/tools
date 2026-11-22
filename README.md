@@ -118,7 +118,6 @@ addresses (`guides/05_exe_and_engine.md`).
 |---|---|---|
 | `retailextract.py` | `build/all.sh`, `build/reference.sh` | Takes what is needed from the retail game, as the project installs it from your own disc images (`out/retail/<release>/`, see `build/retail.sh`; its `MANIFEST.txt` or `.retail-files` lists its files): game data, the third-party binaries, the retail engine images for checking only (`out/reference/`), and an audit of every PE file in the game directory. |
 | `rezextract.py` | `retailextract.py` | Reader for Monolith's REZ archives. Also a CLI: `rezextract.py list <rez>`. |
-| `mkinstall.py` | `build/package.sh` | The public archive's `linux-install.sh` and `windows-install.bat`: where on the European and the USA disc images (in InstallShield 6 cabinets, compressed) and in the 1.3 update (a Microsoft cabinet) each retail file's bytes are, and how each file of the game directory is made from one; its docstring has the format. |
 | `dsp2mk.py` | `build/build.mk` | Monolith's Visual C++ 6 workspace as make rules: every project of a `.dsw` and its dependencies, every compile with its configuration's flags (per-file `ADD CPP`/`SUBTRACT CPP`, `/Yc`/`/Yu`), every library and link (`P_<project>_OUT`, `P_<project>_OBJS`), the custom build steps. `CL_<project>` overrides the compiler. |
 | `dsp2files.py` | by hand | Lists a VC6 `.dsp` project's source files for one configuration. |
 | `jupitersrc.py` | `build/all.sh`, `build/jupiter.sh` | Copies the LithTech Jupiter SDK's source (WONAPI, CServerDir_Titan) from the directory given (the project's install of the SDK, `out/retail/lithtech-jupiter-51/` in nolf2src: `build/jupiter.sh`) into `src/Game/Libs/`. |
@@ -222,3 +221,14 @@ Kept from nolfsrc, not worth adapting for NOLF2, and left as they are:
   playtest scripts are NOLF1's, and still the versions nolfsrc used: NOLF2
   has no Intel-compiled `d3d.ren` (the renderer is linked into
   `Lithtech.exe`) and its Mac engine is Mach-O (`macho.py`).
+
+## Removed
+
+* `mkinstall.py`: NOLF2's install scripts for its public archive. It read
+  the disc images, the update and the installed retail game from a rez/
+  submodule beside the tools. Each project now has its own
+  `build/mkinstall.py`, which reads the project's own lists
+  (`build/retail-files.txt`, `build/retail-ranges.txt`) and needs no disc
+  image. nolf2src's copy holds the format of the list that the install
+  scripts read. The last version here is in this repository's history
+  (`git log -- mkinstall.py`).
