@@ -31,13 +31,15 @@ so a tool needs no object directory: it reads the link. The few listed
 under "Not adapted" at the end are NOLF1's, kept for reference.
 
 **Where they sit.** A project carries them as a submodule at `ext/tools/`,
-with the other submodules (`ext/rez/`, `ext/toolchains/`, `ext/ffmpeg/`)
-beside them; the older layout, `tools/` with `rez/` and `toolchains/` at the
-project's root, still works. `layout.py` (and `layout.sh` for the shell
-scripts) works out which: the project's root, and the submodules beside the
-tools. `$TOOLS_PROJECT` names the project's root when it is not the
-directory above (lithtools: its submodules are in the repository's `ext/`,
-its project in `legacy/talon/`).
+with the other submodules (`ext/toolchains/`, `ext/ffmpeg/`) beside them;
+the older layout, `tools/` with `toolchains/` at the project's root, still
+works. `layout.py` (and `layout.sh` for the shell scripts) works out which:
+the project's root, and the submodules beside the tools. `$TOOLS_PROJECT`
+names the project's root when it is not the directory above (lithtools: its
+submodules are in the repository's `ext/`, its project in `legacy/talon/`).
+No tool expects a `rez/` submodule: the project installs the retail game
+from your own disc images (in `isos/`) into `out/retail/`, and gives its
+path to the tools that read it.
 
 Run them from the project's root (most also work from anywhere), in the
 build container (`make shell`) or on a host with Python 3 and binutils.
@@ -45,7 +47,7 @@ build container (`make shell`) or on a host with Python 3 and binutils.
 compile.
 
 **The ground truth is `out/reference/`.** `build/reference.sh` extracts the
-retail 1.3 binaries there from the installed game (`rez/games/nolf2-eu-1.3`),
+retail 1.3 binaries there from the installed game (`out/retail/nolf2-eu-1.3/`),
 with each image's function table (`<stem>-functions.csv`, from
 `enumfuncs.py`) and, for the engine, its vtable table (`<stem>-vtables.csv`,
 from `vtabaudit.py`). Every tool below that reads "the shipped image" reads it

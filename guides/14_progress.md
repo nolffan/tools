@@ -54,9 +54,10 @@ You need three things.
    `src/lithshared/out/*.lib`. Only the release build is scored; the variant
    builds live under `out/build-<variant>/`, where the scorer never looks.
 2. **The retail images**, the ground truth. `make retail` installs the
-   retail game (from `rez/`), and the first `make progress` extracts the
-   binaries it scores into `out/reference/` (`build/reference.sh`), with a
-   function and vtable table per image. That happens once.
+   retail game (from your own disc images in `isos/`), and the first
+   `make progress` extracts the binaries it scores into `out/reference/`
+   (`build/reference.sh`), with a function and vtable table per image.
+   That happens once.
 3. **Optionally, the source release's libraries.** The seven lithshared
    libraries are scored against the prebuilt `.lib`s from Monolith's *NOLF
    Source Code v1.003* release, which is not in the repository. Point
