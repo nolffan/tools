@@ -347,11 +347,20 @@ def check_ci():
             if name in want[t["label"]]:
                 mods[name] = data
         checked = bad = 0
+        from hashcheck import anon
         for mod, rows in sorted(want[t["label"]].items()):
             consts = our_constants(mods[mod]) if mod in mods else {}
+            # a symbol in an anonymous namespace has another number in
+            # another build (hashcheck.anon): found by its name without it,
+            # where only one symbol of the object has that name
+            by_anon = {}
+            for (s, o), c in consts.items():
+                by_anon.setdefault((anon(s), o), []).append(c)
             for sym, off, width, h in rows:
                 checked += 1
                 c = consts.get((sym, off))
+                if c is None and len(by_anon.get((anon(sym), off), ())) == 1:
+                    c = by_anon[(anon(sym), off)][0]
                 if c is None or len(c) != width or hashlib.sha256(c).hexdigest() != h:
                     bad += 1
                     what = "gone" if c is None else repr(struct.unpack(
