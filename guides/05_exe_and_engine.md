@@ -154,26 +154,27 @@ Boot the game on your build when it first links. Then boot it again after
 each change. Use Xvfb and Wine with scripted input:
 
 - `tools/playtest.sh` and its `playtest-*.txt` input scripts.
-- avp2src's `build/playtest.sh`, which adapts the script for each game.
-  `make test` runs it.
+- A small wrapper in each game repository that adapts the script for that
+  game, and a `make test` target that runs it. Example: avp2src's
+  `build/playtest.sh`.
 
-AvP2 and Primal Hunt first showed only a black screen on our engines. The
-work to get them to their first levels found these problems, and others
-(avp2src f244290, 27eb79d, baebb5b):
+A first boot often finds faults that the score cannot show. These are the
+usual types. The examples are from the first boots of AvP2 and Primal
+Hunt, which showed only a black screen (avp2src f244290, 27eb79d,
+baebb5b):
 
-* **Vtable twins with identical masked bytes.** The scorer put `GetNode`
-  of `ILTModel` at the address of `GetSocket`, and `GetSocket` at the
-  address of `GetNode`. The `CreateString` slot of `ILTServer` contained
-  `LAlloc::Alloc`. All the bytes matched, but the calls went to the wrong
-  function.
-* **A base stub beating the override.** The table of `CObjWorldModel` kept
-  the empty `OnFoundInBox` of `CObjBase`. Thus the world tree did not get
-  to the renderer. The world was black, but nothing crashed.
-* **An undersized struct overwriting globals.** The declaration of
-  `g_FormatMgr` in d3d.ren gave 0x9a8 bytes, but the correct size is
-  0xb94. The scale tables of its constructor wrote over the texture
-  globals after it. Also, `ViewParams` in `d3d_drawsky.cpp` was 0x4cc
-  bytes, not 0x4f8, and it wrote over a sky-portal handle.
+* **Vtable twins with identical masked bytes.** Two functions have the
+  same bytes, so the scorer can swap them. All bytes match, but the calls
+  go to the wrong function. Example: `GetNode` and `GetSocket` of
+  `ILTModel` each went to the address of the other.
+* **A base stub beating the override.** A table keeps an empty inherited
+  virtual. Nothing crashes, but a feature does nothing. Example: the table
+  of `CObjWorldModel` kept the empty `OnFoundInBox` of `CObjBase`, and the
+  world rendered black.
+* **An undersized struct overwriting globals.** A struct that is too small
+  lets its constructor write over the globals after it. Example: the
+  declaration of `g_FormatMgr` in d3d.ren gave 0x9a8 bytes, not 0xb94, and
+  its scale tables wrote over the texture globals.
 
 The vtable rules from these problems are in [07](07_vtables.md#when-placement-votes-ties-and-twins).
 
@@ -182,7 +183,7 @@ output with the retail output is correct only where two retail runs give
 the same output. Uninitialised data depends on the heap. The heap depends
 on very small things, for example the length of the path of the exe.
 
-For example, the Processor.exe comparison of lithtools passed only when
+Example: the Processor.exe comparison of lithtools passed only when
 the name of our exe had the same length as the name of the shipped exe.
 The cause is that the T-junction splits of the physics BSP write
 uninitialised vertex colours (lithtools `legacy/talon/docs/PLAN.md`,
@@ -203,10 +204,10 @@ the first call to one of them jumps to 0x00400000 and executes the bytes
 of the PE header. The result is an illegal instruction at 0x0040000C. This
 often occurs in a static constructor before `WinMain`.
 
-For example, in avp2src, the `CConsoleView` constructor for the global
+Example: in avp2src, the `CConsoleView` constructor for the global
 `g_Console` called a `CConsoleCritSec` constructor that no object defined.
 Use such an image only for the score. For the effect on the scorer, and
-how avp2src bound its symbols to run the image, see
+how to bind the symbols so that the image runs, see
 [14](14_progress.md#links-with-force).
 
 ## The engine binaries

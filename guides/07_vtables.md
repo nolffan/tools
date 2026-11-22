@@ -133,19 +133,18 @@ into the data after it:
   records the table as a read-on (lithtools d0118e2).
 * **No reference range.** The check also cuts a shipped table at an
   address where the image refers into the table. For this, the check must
-  know the range of tables to examine. Only the NOLF engine images have a
-  `vtabaudit` table. For other targets, the range was 0..0x10000, and the
-  check cut nothing. Thus an abstract table with no placed neighbour
-  continued into the next table. In Object.lto, `CAIPoodleState` continued
-  into `CAIPoodleStateDischarge`. Now, if a target has no audited tables,
-  the check uses the `.rdata` of the shipped image as its range (tools
+  know the range of tables to examine. Without a range, the check cuts
+  nothing, and an abstract table with no placed neighbour continues into
+  the next table. Example: in Object.lto, `CAIPoodleState` continued into
+  `CAIPoodleStateDischarge`. Now, if a target has no audited tables, the
+  check uses the `.rdata` of the shipped image as its range (tools
   e3a10a3).
 * **A statically linked `_purecall`.** Abstract slots hold `_purecall`. The
   check finds it as the `jmp [IAT]` thunk of `MSVCRT!_purecall`. An image
   that links the CRT statically has no such thunk. Thus the check could not
   verify the last slot of each abstract table. For such a target, give the
-  address as `purecall` in `progress/targets.py`. nolfsrc f91c788 did this
-  for `CShell.dll` and `Object.lto`. `lithtech.exe` already had it.
+  address as `purecall` in `progress/targets.py` (example: nolfsrc
+  f91c788).
 
 ## When placement votes: ties and twins
 
@@ -161,30 +160,30 @@ votes can go wrong in a small number of known ways.
   `CPredDisk`. Now the scorer does not place a table that ties with another
   table (`progress.py`, tools c83182e).
 
-avp2src builds the full interface vtables of its engines from the
-placements of the scoreboard. Its `build/vtables/mkvtables.py` makes the
-tables, and `tools/mkvtabobj.py` links them. When we booted these engines,
-we found three more rules. They apply to all tables that are built or
-checked this way:
+You can also build vtables from the placements of the scorer, for
+example to link the interface tables of an engine that is not complete
+(`tools/mkvtabobj.py` links such tables; avp2src builds its engine
+interfaces this way). Then a wrong placement is a wrong call at run time.
+Three more rules apply to all tables that are built or checked this way:
 
-* **Twins with the same masked bytes.** In `ILTServer`, slot 46
-  (`CreateString`) held `LAlloc::Alloc`. The two functions have the same
-  bytes when the relocations are masked (avp2src 27eb79d). In `ILTModel`,
-  `GetNode` and `GetSocket` each went to the address of the other
-  (baebb5b). To tell twins apart, examine what their operands reach. If a
-  call in a candidate reaches a different function of ours than the call in
-  retail, the scorer rejects the candidate. The scorer also compares twins
-  outside the union of the two masks.
-* **A placement that its own calls refute gets no vote.** The swapped
-  `GetNode` and `GetSocket` then voted for the wrong string addresses
-  (baebb5b).
-* **A function of the class wins over a stub of the base.** The table of
-  `CObjWorldModel` kept the empty inherited virtuals of `CObjBase` in eight
-  slots. One of these was `WantsTree` (27eb79d). Another was slot 7,
-  `OnFoundInBox`. The frustum walk of the world tree calls it on each world
-  model (baebb5b). As a result, the world rendered black. Now a placed
+* **Twins with the same masked bytes.** Two functions can have the same
+  bytes when the relocations are masked. To tell twins apart, examine what
+  their operands reach. If a call in a candidate reaches a different
+  function of ours than the call in retail, the scorer rejects the
+  candidate. The scorer also compares twins outside the union of the two
+  masks. Example: in `ILTServer`, slot 46 (`CreateString`) held
+  `LAlloc::Alloc` (avp2src 27eb79d). In `ILTModel`, `GetNode` and
+  `GetSocket` each went to the address of the other (baebb5b).
+* **A placement that its own calls refute gets no vote.** Example: the
+  swapped `GetNode` and `GetSocket` then voted for the wrong string
+  addresses (baebb5b).
+* **A function of the class wins over a stub of the base.** A placed
   function of the class itself wins over the stub of its base, near-paired
-  or not. The scorer reads the hierarchy from the sources.
+  or not. The scorer reads the hierarchy from the sources. Example: the
+  table of `CObjWorldModel` kept the empty inherited virtuals of `CObjBase`
+  in eight slots, `WantsTree` (27eb79d) and `OnFoundInBox` (baebb5b)
+  among them. The world tree never got to the renderer, and the world
+  rendered black.
 
 The scorer showed no problem with any of these cases. We found them when we
 ran the game
@@ -198,12 +197,13 @@ locator comes immediately before each vtable. The locator names the type
 descriptor (`.?AV<class>@@`). Through the class hierarchy descriptor, the
 locator also names the bases and their offsets.
 
-tron20src uses this method to pair the vtables of its game with the retail
-vtables. It also checks hand-edited headers with a probe. The probe is a
+Pair each of our vtables with the retail vtable that has the same type
+descriptor. To check a hand-edited header, use a probe. The probe is a
 member pointer to each virtual. The compiled vcall thunk of that pointer
-names the slot that VC6 gives the virtual. With this probe, tron20src found
-that VC6 puts the virtual overloads of a name in the **reverse** of their
-declaration order (tron20src b4717cd, 4e170d2). These helpers are local
-scratch scripts of tron20src, in its gitignored `out/work/`. They are not
-tools of this repository. [15](15_sibling_games.md) gives more detail about
-the method.
+names the slot that the compiler gives the virtual. Compare these slots
+with the retail table.
+
+Example: with this probe, tron20src found that VC6 puts the virtual
+overloads of a name in the **reverse** of their declaration order
+(tron20src b4717cd, 4e170d2). [15](15_related_source.md) gives more detail
+about the method.

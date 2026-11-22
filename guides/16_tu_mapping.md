@@ -42,7 +42,7 @@ align the next COMDAT. The linker fills with `0xCC`. Thus:
 * The flag does not change in a translation unit. Thus each `/O1`↔`/O2`
   change in the function list is a boundary, also where there is no CC.
 
-The example is the Primal Hunt `d3d.ren` (avp2src 58e9ab5,
+Example: the Primal Hunt `d3d.ren` (avp2src 58e9ab5,
 `docs/D3D_OBJECTS.md`, "How the boundaries were found"). Test compiles with
 cl 8966 proved the rule first. Of 1,301 rows, 315 are `/O2`, 966 are `/O1`
 and 20 are ambiguous. An ambiguous row is aligned *and* stops exactly on a
@@ -161,23 +161,22 @@ Under `/O1` (PH `server.dll` 0x10008bd2), the guard is 21 bytes. It has a
 follows with no gap. This is why the guard is important: it shows the end
 of a file exactly where padding shows nothing.
 
-How we used it:
+Use the guard in these ways (examples from the Primal Hunt engine):
 
-* Each reconstructed object that has a guard in its retail range got
-  `#include <string>` (behind `PRIMAL_HUNT`). This gave +39 identical on
-  `lithtech.exe` only, with no loss (avp2src 56bb52b, ee3bd8a).
-* A guard in retail, with no file of ours around it that has a guard,
-  means that **our file merges two retail files**. We split these files
-  out. In one round, this took the unwritten count of `lithtech.exe` from
-  27 to 5 (b194edc). The splits were `sprite.cpp` out of `cmodelload.cpp`
-  and `csvis.cpp`, `videomgr.cpp` and `visquery.cpp` out of `fntdraw.cpp`,
-  and more. The same work took server.dll from 13 to 4 (859f495). In
-  613d790, the guard of each new unit is identical at the retail address
-  (`lithtech.exe` 0x4428e0, 0x449f70, 0x4a01c0).
-* The enumerator joins the guard to the thunk that it jumps to. This makes
-  one row where there are two symbols. avp2src 65b2599 added 140 of these
-  splits to `progress/extent-splits.csv`. The file now has 141: 95 for
-  `lithtech.exe` and 46 for `server.dll`.
+* **Include `<string>`** in each reconstructed object that has a guard in
+  its retail range. Example: +39 identical on `lithtech.exe`, with no loss
+  (avp2src 56bb52b, ee3bd8a).
+* **Split the file.** A guard in retail, with no file of ours around it
+  that has a guard, means that **our file merges two retail files**. Split
+  them. Example: one round of splits (`sprite.cpp` out of
+  `cmodelload.cpp`, `videomgr.cpp` and `visquery.cpp` out of `fntdraw.cpp`,
+  and more) took the unwritten count of `lithtech.exe` from 27 to 5
+  (b194edc), and of server.dll from 13 to 4 (859f495). The guard of each
+  new unit is identical at its retail address (613d790).
+* **Split the row.** The enumerator joins the guard to the thunk that it
+  jumps to. This makes one row where there are two symbols. Add a split to
+  `progress/extent-splits.csv` for each guard. Example: avp2src 65b2599
+  added 140 of these splits.
 
 Images built against STLport (AvP2 1.0.9.6) do not have this guard.
 
@@ -221,8 +220,7 @@ and the link line is the project file:
   shared library are mixed. The libraries follow, in the alphabetical order
   of their projects. Two projects linked together give two alphabetical
   sequences. One sequence means **one project for each DLL**. We wrote the
-  cjacksrc `Object.dsp` and `ClientShellDLL.dsp` on that basis (cjacksrc
-  `docs/PLAN.md` "4. game").
+  project files on that basis (cjacksrc `docs/PLAN.md` "4. game").
 * **The NOLF2 engine** has `controlfilemgr` first. Then it has
   `bindmgr` .. `world_shared_bsp` in alphabetical order, then an "ILT
   interface" group. This is exactly the Jupiter `EXE_Lithtech` file list.
@@ -234,13 +232,14 @@ and the link line is the project file:
   with the nolfsrc symbols that have names for the NOLF addresses, are in
   the order of the NOLF `.dsp` (avp2src `docs/D3D_OBJECTS.md` item 6).
 
-Names to use as anchors: the NOLF2 engine registers each interface with a
-`define_holder`/`instantiate_implementation` dynamic initialiser. This
-initialiser pushes the name of the interface. These initialisers are at
-the **start of the code of each object**. There are 48 interface names in
-the exe and 25 in the DLL (nolf2src `docs/engine/anatomy.md` §3). The Mac
-port is not stripped. It is a different source of names and file groups,
-but not of addresses.
+Names to use as anchors: a registration macro that pushes a name in a
+dynamic initialiser puts that name at the **start of the code of each
+object**. Example: the NOLF2 engine registers each interface with a
+`define_holder`/`instantiate_implementation` initialiser. This gives 48
+interface names in the exe and 25 in the DLL (nolf2src
+`docs/engine/anatomy.md` §3). A port to a different platform can be
+unstripped. It is a source of names and file groups, but not of
+addresses.
 
 **The import order is also the link order.** The import table lists the
 DLLs in the order of the first use of their import libraries on the link
@@ -364,8 +363,8 @@ proposal before you commit it.
    sequence and each flag change as a boundary.
 4. **Mark the other markers.** These are the head of each `__xc_a` group
    and each `<string>` guard (the end of a file). They are also each
-   sequence of header-constant initialisers or `define_holder`
-   registrations (the start of a file).
+   sequence of header-constant initialisers or name registrations (the
+   start of a file).
 5. **Do a check with the data.** The `.bss` blocks and the `.data` string
    pool must increase monotonically across your objects. Move the
    boundaries until they do. Keep the COMDAT `.bss` rows separate as inline
@@ -391,8 +390,7 @@ proposal before you commit it.
   alignment after it, whatever comes next. Also, `/O2` objects can contain
   packed code. Two examples:
   - The PH TU02 (0x10004620..0x10004656, packed, not referenced) has 0x90
-    after it, up to the `/O2` TU03. `ph/` builds TU01-TU03 as one
-    `d3d_modelvb.cpp`.
+    after it, up to the `/O2` TU03.
   - The AvP2 `d3d_init` ends with one packed 30-byte function (0x1001bee5)
     after 23 aligned functions. The PH `d3d_init` is the same.
 

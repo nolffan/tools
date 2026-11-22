@@ -121,11 +121,11 @@ file two times, you get two different names. The name is part of each
 symbol that the namespace declares, so its length changes where the linker
 puts code and data.
 
-In avp2src, WONAPI has three anonymous namespaces (`QueueSocket.cpp`,
-`CDKey.cpp`, `CRC.cpp`). From one clean build to the next, they changed
-whether six functions of `ServerDir.dll` were byte-identical. A scored
-build must be reproducible. Thus the library build runs `tools/anonns.py`
-on those objects. The script changes each number in the string table, and
+A scored build must be reproducible. Thus, run `tools/anonns.py` on each
+object that has an anonymous namespace. Example: in avp2src, three
+anonymous namespaces of WONAPI (`QueueSocket.cpp`, `CDKey.cpp`, `CRC.cpp`)
+changed, from one clean build to the next, whether six functions of
+`ServerDir.dll` were byte-identical. The script changes each number in the string table, and
 in the RTTI names that contain it, to a fixed number. It does not change
 code or data.
 
@@ -176,11 +176,11 @@ Static libraries have an exact, per-object version of the same evidence: the
 
 ## Reading the flags off the image
 
-The flags start in the `.dsp` files, but the `.dsp` files do not give the
-final flags. Monolith changed the projects between the source releases and
-the retail builds. The sibling game that a project came from is not
-evidence for its flags. Each switch below leaves a mark in the retail
-image, and you can count that mark. It is faster to count the mark first
+The flags start in the project files, but the project files do not give
+the final flags. A developer can change a project between a source release
+and the retail build. A project that started as a copy of the project of a
+sibling game is not evidence for its flags. Each switch below leaves a mark
+in the retail image, and you can count that mark. It is faster to count the mark first
 than to find the flag later from a thousand nears.
 
 Use this procedure:
@@ -194,12 +194,11 @@ that has more identical functions and that loses no identical function.
 
 **`/GR`: whose type descriptors are there.** Search the image for `.?AV`
 names. If the classes of the game have these names, the project used
-`/GR`. This is true also when the base project does not use `/GR`. For
-example, tron20src's `CShell.dll` has RTTI for Tron's own client classes
-(`CClientWeaponDisc`, `CHUDHealthEnergy`, ...). Its `Object.lto` has RTTI
-for Tron's server classes. Tron's projects started from the TO2 Final
-configurations of NOLF2, and these have no RTTI. Both Tron images got
-`/GR` (tron20src, commit 7d946f9).
+`/GR`. This is true also when the base project does not use `/GR`.
+Example: in tron20src, `CShell.dll` and `Object.lto` have RTTI for the
+game's own classes (`CClientWeaponDisc`, `CHUDHealthEnergy`, ...). The
+projects that they started from have no RTTI. Both images got `/GR`
+(tron20src, commit 7d946f9).
 
 If the only descriptors are those of the standard library (`exception`,
 `logic_error`, `length_error`, `out_of_range`, `type_info`), the project
@@ -258,8 +257,9 @@ J.A.C.K.'s RegMgr imports `RegDeleteKeyA` and `RegDeleteValueA`. Only the
 uncalled `Delete*` members of `CRegMgr` use these functions. Thus the
 linker included all of `regmgr.obj`, and the build did not use `/Gy`.
 
-We changed the engine projects to `/Ox /GF`. No identical function was
-lost, and the number of unwritten functions went down:
+Example: when the Contract J.A.C.K. engine projects changed to
+`/Ox /GF`, no identical function was lost, and the number of unwritten
+functions went down:
 
 - `Lithtech.exe`: from 39 to 28.
 - `server.dll`: from 12 to 9.
@@ -313,20 +313,16 @@ Do these steps:
 
 **Prebuilt libraries may not be what retail linked.** The `.lib` files of
 a source release can be a later build than the build that the shipped
-images linked. AvP2 1.0.9.6's game DLLs contain cl 8168 builds of nine
-library objects (`ltguieditctrl`, `butemgr`, `GameSpyMgr`, ...). The
-prebuilt libraries of the release are all 8966. Each of these objects
-matches retail only under 8168. For example, `CLTGUIEditCtrl::Render` is
-383 bytes under 8168, as in retail, and 378 bytes under 8966.
+images linked. Thus a library that "fails to match" can be correct source
+under a different compiler revision.
 
-Also, `AVP2Serv.exe` had 145 "unwritten" functions. They were ButeMgr,
-CryptMgr and StdLith, built by 8168.
-
-The AvP2 engine is cl 9044, from the Processor Pack. It links 9044 builds
-of lith, RezMgr and StdLith. These are not the prebuilt libraries and not
-the debug libraries. For example, under 9044, `CRezItm::InitRezItm`
-copies its name with the `strcpy` of VC6 `/O2`. Under 8966 `/O2`, the
-compiler inlines that copy as `rep movs`.
+Example: AvP2 1.0.9.6's game DLLs contain cl 8168 builds of nine library
+objects (`ltguieditctrl`, `butemgr`, `GameSpyMgr`, ...). The prebuilt
+libraries of the release are all 8966. Each of these objects matches
+retail only under 8168. `CLTGUIEditCtrl::Render` is 383 bytes under 8168,
+as in retail, and 378 bytes under 8966. The engine of the same release
+links cl 9044 builds of its libraries. Under 9044, `CRezItm::InitRezItm`
+calls `strcpy`. Under 8966, the compiler inlines that copy as `rep movs`.
 
 Use this procedure for the libraries:
 

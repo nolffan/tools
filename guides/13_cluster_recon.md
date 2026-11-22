@@ -274,13 +274,10 @@ than ground rule 4. It also needs:
 - a rule that tells who owns the shared files,
 - one person who merges.
 
-The model is the unwritten-functions wave of tron20src. Ten band agents
-worked, each in its own worktree. After the merge, the net gain was +721
-identical functions: 758 new functions, and 37 small stubs re-paired among
-twins (tron20src 6a0b3f0). The working files of this wave are in the
-`out/work/` of tron20src, which is gitignored. They are local to that
-checkout. They are not in its history and not part of `tools/`. Thus, for
-a new wave, make these files again. Do not look for them in git.
+Example: in one wave of tron20src, ten band agents worked, each in its
+own worktree. After the merge, the net gain was +721 identical functions:
+758 new functions, and 37 small stubs re-paired among twins (tron20src
+6a0b3f0).
 
 **Partition by retail address band.** Cut the code of each DLL into a small
 number of contiguous address ranges. Give one or more ranges to each agent.
@@ -305,16 +302,14 @@ case, and the agents do not have to discuss them.
   can add a member at the end only where the retail layout shows it. Do not
   reorder or remove items in a class that another agent owns. List your
   additions in your report.
-- Use the `out/work/dspadd.py` of tron20src to add new files to the
-  project. This script is a local helper, not part of `tools/`. It keeps
-  the group in alphabetical order. Thus the `.dsp` additions cause as few
+- Add new files to the project with a script that keeps each group in
+  alphabetical order. Thus the project-file additions cause as few
   conflicts as possible.
 - Workers do not run `make progress`, and they do not merge. Only the
   coordinator merges the branches. The coordinator resolves the `.dsp`
   conflicts and runs `make progress` one time for the wave.
 
-**A brief that each agent reads first.** The brief of tron20src was
-`out/work/AGENT_BRIEF.md`. The brief contains:
+**A brief that each agent reads first.** The brief contains:
 
 - The project and its targets.
 - The origin of the source.
@@ -333,19 +328,19 @@ case, and the agents do not have to discuss them.
 
 ### What went wrong, and what to do about it
 
-Two problems used most of the merge time of the tron20src wave.
+Two problems used most of the merge time of the example wave.
 
 - **Workers duplicated shared dependencies.** If two bands need the same
-  class, two workers write it. In Tron, two workers added
+  class, two workers write it. Example: in Tron, two workers added
   `CLIENTFXUSERCREATESTRUCT` for two different users (e18c7f2). The GameSpy
   files `md5c.c` and `nonport.c` came two times, in two directories
   (4d3f4c2). `CSubroutineDataMgr` came one time as the full class. It came
   a second time as a partial header with a second global (eff0766). Each
   case needed a dedup commit after the merge. Also, we had to move the user
   of the partial copy onto the full class.
-- **Almost every merge had a conflict in `docs/RETAIL_BUGS.md`.** Each
-  worker that found a retail bug appended to the same section of the same
-  file. Four merges of the wave had a conflict in that file and in no other
+- **Almost every merge had a conflict in the shared bug log.** Each worker
+  that found a retail bug appended to the same section of the same file
+  (`docs/RETAIL_BUGS.md`). Example: four merges of the wave had a conflict in that file and in no other
   file (ccc5235, 8df0099, d07c0be, 8f64ca5). Two more merges had a
   conflict in a `.dsp` file. After the merges, the entries needed a
   separate commit to separate them (ba62c68).
@@ -360,8 +355,8 @@ them:
   band, or write the classes first.
 - Add to the "already solved" list between waves. It is better to add to
   it between merges. Then a late worker can grep for the code of an early
-  worker. The list in the Tron brief now names the three duplicated cases
-  above.
+  worker. Example: the list in the Tron brief now names the three
+  duplicated cases above.
 - *(Not yet tried.)* Make `RETAIL_BUGS.md` append-only. Mark it
   `docs/RETAIL_BUGS.md merge=union` in `.gitattributes`. Then concurrent
   appends merge without a conflict.
