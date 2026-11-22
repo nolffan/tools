@@ -13,7 +13,9 @@ codegen at all. This file is the accumulated case law: the patterns that are
 the second half is a list of individual findings, each with the function it
 closed. Most of it is about Microsoft Visual C++ 6.0 (`cl` 12.00), which built
 every binary except `d3d.ren`; the entries on Intel C/C++ 4.0 (`icl`), which
-built `d3d.ren`, are grouped at the end of the contents.
+built `d3d.ren`, are grouped at the end of the contents. After them are a
+small number of entries on the compilers of the sibling games (cl 9044,
+cl 13.10). These compilers change how the rest of this file applies.
 
 Two rules govern how to use it:
 
@@ -99,6 +101,9 @@ Two rules govern how to use it:
 - [The same function pointer in two slots, stored twice](#the-same-function-pointer-in-two-slots-stored-twice)
 - [A virtual called on a global OBJECT devirtualises; the shipped code uses a pointer](#a-virtual-called-on-a-global-object-devirtualises-the-shipped-code-uses-a-pointer)
 - [The pad that forgot the vptr](#the-pad-that-forgot-the-vptr)
+- [VC6 groups a name's virtual overloads at the first one's slot, in REVERSE declaration order](#vc6-groups-a-names-virtual-overloads-at-the-first-ones-slot-in-reverse-declaration-order)
+- [At `/O1` a template's virtual forward stays a five-byte `jmp` in the vtable slot](#at-o1-a-templates-virtual-forward-stays-a-five-byte-jmp-in-the-vtable-slot)
+- [One dynamic initializer per declaration statement, not per declarator](#one-dynamic-initializer-per-declaration-statement-not-per-declarator)
 
 **Inlining (VC6)**
 
@@ -112,6 +117,8 @@ Two rules govern how to use it:
 - [A scratch translation unit can invent a residual](#a-scratch-translation-unit-can-invent-a-residual)
 - [What byte-matching cannot see: constants behind relocations](#what-byte-matching-cannot-see-constants-behind-relocations)
 - [Byte-identity is not identity of source, and the count is deliberately shy](#byte-identity-is-not-identity-of-source-and-the-count-is-deliberately-shy)
+- [A lone `static` helper in a header is every includer's copy, folded into one](#a-lone-static-helper-in-a-header-is-every-includers-copy-folded-into-one)
+- [A file outside the precompiled header emits the header's initializers itself](#a-file-outside-the-precompiled-header-emits-the-headers-initializers-itself)
 - [The mixed-compiler theory for the size-exact nears: tested, rejected](#the-mixed-compiler-theory-for-the-size-exact-nears-tested-rejected)
 - [What the size-exact nears actually are, and why source work will not move them](#what-the-size-exact-nears-actually-are-and-why-source-work-will-not-move-them)
 - [Levers that closed "register allocation" verdicts](#levers-that-closed-register-allocation-verdicts)
@@ -121,6 +128,13 @@ Two rules govern how to use it:
 - [icl's register calling convention is `/Qip`, and it is reproducible](#icls-register-calling-convention-is-qip-and-it-is-reproducible)
 - [icl predicts a pointer is non-null; a zero test on an integer is not](#icl-predicts-a-pointer-is-non-null-a-zero-test-on-an-integer-is-not)
 - [Every float division emits a DEAD `1.0f` next to the live one](#every-float-division-emits-a-dead-10f-next-to-the-live-one)
+- [icl orders a float sum's products by how each operand is addressed](#icl-orders-a-float-sums-products-by-how-each-operand-is-addressed)
+- [icl sinks a failure return to the function's end unless the source nests it](#icl-sinks-a-failure-return-to-the-functions-end-unless-the-source-nests-it)
+
+**Other compilers: cl 9044 (AvP2) and cl 13.10 (Contract J.A.C.K.)**
+
+- [cl 9044 allocates around callees it has already compiled: definition order is retail's order](#cl-9044-allocates-around-callees-it-has-already-compiled-definition-order-is-retails-order)
+- [cl 13.10 compiles a function only after every later-defined function it calls](#cl-1310-compiles-a-function-only-after-every-later-defined-function-it-calls)
 
 ---
 
@@ -507,7 +521,9 @@ invisible until a function reaches a sibling method through `this` — and then
 every slot is wrong at once. Derive the layout from the binary (`ret N` arg
 counts plus error-tag strings, `tools/vtabmap.py`) and cross-check against the
 header; where an SDK header is from a later era than the binary, the binary
-wins. See [07-vtables](07_vtables.md).
+wins. See [07-vtables](07_vtables.md). NOTE: Overloaded virtuals are an
+exception to this order. VC6 groups them and puts them in reverse order. See
+[VC6 groups a name's virtual overloads](#vc6-groups-a-names-virtual-overloads-at-the-first-ones-slot-in-reverse-declaration-order).
 
 **Every `ILTMath` / `ILTCommon` / `ILTModel` slot returns `LTRESULT`, not
 `void`.** The two bytes of `xor eax,eax` are the tell.
@@ -767,6 +783,28 @@ and keeps cold blocks at their lexical position" was **falsified** once the
 real compilers were in hand. `UpdateObjects`' retire block, the sky `lea` and
 `GetPacket`'s back edge reproduce under no revision we hold. Those are open
 source-shape questions, not revision variance.
+
+**The sibling games bring two compilers that this table does not have.**
+Each of them changes a rule that the VC6 entries accept as true:
+
+- **cl 9044** (`msvc-6.00-9044`: SP5 with the Processor Pack, a 13.00
+  `c2.dll` behind an 8804 driver). It builds these AvP2 1.0.9.6 files:
+  `lithtech.exe`, `server.dll` and the launcher. It does not build the AvP2
+  game DLLs or `d3d.ren`. cl 8168 and cl 8966 build them (avp2src
+  `progress/COMPILERS.md`). cl 9044 also builds the AvP2 "Talon" DEdit and
+  ModelEdit in lithtools. Revisions 8168..9782 do not use the body of a
+  callee for the register allocation of its caller. cl 9044 uses the data
+  that it has about a callee that it compiled before. Thus **definition
+  order inside a file is a codegen input**. See
+  [cl 9044 allocates around callees it has already compiled](#cl-9044-allocates-around-callees-it-has-already-compiled-definition-order-is-retails-order).
+- **cl 13.10** (`msvc-7.10-3077`, Visual C++ .NET 2003) builds Contract
+  J.A.C.K. A different rule controls its function order in an object
+  ([cl 13.10 compiles a function only after...](#cl-1310-compiles-a-function-only-after-every-later-defined-function-it-calls)).
+  The cjacksrc notes tell you to examine each VC6 rule in this file before
+  you use it with cl 13.10 (cjacksrc `progress/COMPILERS.md`, Notes).
+
+[15-related-source](15_related_source.md) tells how the games share source
+and evidence. This file keeps only the codegen.
 
 ---
 
@@ -1244,6 +1282,46 @@ atexit`). `__forceinline` on the constructor reproduces the shipped shape
 exactly, including the global's address folded into every store and no `this`
 register.
 
+## One dynamic initializer per declaration statement, not per declarator
+
+`CSphereQuery a, b, c;` is ONE initializer function, not three. VC6 gives
+each declaration statement one dynamic initializer. That initializer
+constructs all the objects that the statement declares. Thus the run of
+`_$E` thunks at the start of a module counts statements, not objects.
+NOTE: The initializer of an empty constructor is a `jmp` to a `ret`, so
+these initializers are easy to count.
+
+Each retail AvP2 and Primal Hunt engine has six such initializers for
+`worldsim.cpp`, then the initializer of `g_BoxPlanes`, and nothing after
+it. To get this result, declare the three spheres in one statement and the
+three move vectors in one statement. Define `g_BoxPlanes` after the two
+vectors of the step-up (avp2src 9bd360b; Primal Hunt `lithtech.exe`
+0x0041a4d0..0x0041a590, `server.dll` 0x1000211b..0x1000213f; AvP2
+0x004182b0, 0x10002071). Thus, read the initializer run as a list of
+declaration statements in file order. Do this before you decide how many
+globals there are, or which line declares which global.
+
+**The atexit thunk of a static data member has a guard. The thunk of a
+file-scope global does not.** For the cache of model vertex buffers in AvP2
+`d3d.ren`, VC6 registers a destructor thunk with `atexit`. This thunk tests
+a guard bit and sets it before it calls the destructor:
+
+```
+	1003a94c:  push $0x1003a958 ; call atexit
+	1003a958:  testb $0x1,0x10093b7c
+	           jne   ret
+	           orb   $0x1,0x10093b7c
+	           mov   $0x10093b10,%ecx
+	           jmp   ~CVertexBufferCache
+```
+
+A plain `CVertexBufferCache g_VertexBufferCache;` gives the same thunk
+without the `testb`/`orb`. A static data member,
+`CVertexBufferCache CVertexBufferCache::s_ModelVBCache;`, gives the retail
+thunk (avp2src d7eef9e: Primal Hunt 0x1003b6b8, AvP2 0x1003a958). Thus, a
+guard bit in an atexit thunk tells you that the object is a static member
+of a class.
+
 ## `_CVector<T>`'s members are not expanded at `/O1`, and that is free work
 
 `Mag`, `MagSqr`, `Norm` and `Cross` come out as calls whose COMDATs are
@@ -1332,6 +1410,95 @@ and the give-away is whether its uses share a register.
 The same reasoning runs backwards: if our build shares a register where
 the shipped build repeats an immediate, stop looking for a scheduling
 lever and add the second definition.
+
+## VC6 groups a name's virtual overloads at the first one's slot, in REVERSE declaration order
+
+Overloaded virtuals do not get their slots in declaration order. VC6
+collects all the virtuals of one name into a block. The block starts at the
+slot of the FIRST declaration of that name. In the block, the last
+declaration comes first. A probe shows this rule (cl 8168 and 8966 give the
+same result, `/O2`, and each call reads the slot that it names):
+
+```c
+struct A { virtual void a0(); virtual void f(int); virtual void f(float); virtual void a3(); };
+struct B { virtual void b0(); virtual void f(int); virtual void g();
+           virtual void f(float); virtual void b4(); };
+struct C { virtual void f(int); virtual void f(float); virtual void f(char*); virtual void c3(); };
+```
+
+```
+	A:  a0 +0   f(float) +4   f(int) +8   a3 +0xc
+	B:  b0 +0   f(float) +4   f(int) +8   g  +0xc   b4 +0x10
+	C:  f(char*) +0   f(float) +4   f(int) +8   c3 +0xc
+```
+
+`B` is the important case. `f(float)` is declared after `g`, but its slot
+comes before the slot of `g`. VC6 moves it up into the block that `f(int)`
+started. Thus, to give a header the retail slots, declare the overloads in
+the opposite order of their slots. If you add an overload anywhere in the
+class, it gets a slot inside the block of its name, not at its declaration
+position. Thus, a retail slot inside an overload block is another overload
+of that name.
+
+The first record of this rule was incorrect, and the incorrect version
+caused one wrong slot. When tron20src made the layout of the Tron engine
+interfaces, it recorded "a name's overloads together, in declaration order"
+(8d627cf). Its probe for each header examined only that our header gave the
+retail slots. The probe did not examine the rule. Later, the calls of the
+game to `CreateFont` and `SetText` gave "in the reverse of their
+declaration order" (b4717cd).
+
+Both statements were in its `docs/PLAN.md` at the same time. The reverse
+rule is correct. ILTDrawPrim has a `DrawPrim` overload that only Tron has.
+We had to declare it between the `LT_POLYGT4` and `LT_POLYFT4` overloads.
+Only then did the `LT_POLYFT4` overload get the retail slot `+0x5c`. We
+examined this against the two calls on each side of it (CShell 0x1002948a,
+0x100220db; tron20src 4e170d2). See [15-related-source](15_related_source.md).
+
+NOTE: We did not probe overloads that override virtuals of a base class.
+These overloads get the slots of the base class.
+
+## At `/O1` a template's virtual forward stays a five-byte `jmp` in the vtable slot
+
+The object-bank vtables in server.dll do not point to the allocation
+bodies. Slot 1 of each of the eleven vtables is a single tail jump. The
+eleven jumps are adjacent:
+
+```
+	10025ab0:  e9 4f 00 00 00    jmp 0x10025b04
+	10025ab5:  e9 84 00 00 00    jmp 0x10025b3e
+	10025aba:  e9 b9 00 00 00    jmp 0x10025b78
+```
+
+The source is a virtual function that forwards to a typed member of the
+same template. The class body defines that member:
+
+```c
+template<class T> class CObjectBank : public CObjectBankBase
+{
+	virtual void* Allocate() { return AllocateT(); }
+	T* AllocateT() { ... sb_Allocate, then the constructor ... }
+};
+```
+
+VC6 makes a template member a candidate for expansion, wherever its body
+is. `/O1` does not expand `AllocateT`, because it contains an allocation
+and a constructor call. Thus the forward compiles to the jump. `/O2`
+expands it. This is why the slots in `lithtech.exe` point to the bodies.
+
+An empty constructor on the element (for example, the constructor of
+`LTLink`) is sufficient to make `/O1` keep the typed body out of line. The
+result is the shared forward of eleven bytes at 0x1000ed6f: `add $4,%ecx;
+push %ecx; call sb_Allocate; pop %ecx; ret`.
+
+CAUTION: Do NOT instantiate the banks explicitly to get the stubs. This
+only added non-deleting destructors. In `lithtech.exe`, it also added
+`AllocateT` copies that nothing refers to (nolfsrc cb9d2d7: the eleven
+stubs at 0x10025ab0..0x10025ae2 and 0x1000de9b stayed identical).
+
+Thus, if a vtable slot in an `/O1` image holds a five-byte `jmp`, the
+source is a one-line virtual. That virtual forwards to a member that `/O1`
+does not expand. Write the forward, not a thunk.
 
 ## One guard, one shared answer: test for the case that CONTINUES
 
@@ -1687,6 +1854,56 @@ one such TU. So "identical bodies at two addresses" is evidence about how one
 of them was COMPILED, not about whether the linker folds; only the positive
 observation (one address in many vtable slots) tells you ICF is on.
 
+## A lone `static` helper in a header is every includer's copy, folded into one
+
+Tron's `Object.lto` has only one `MakePSetsByte`, at 0x10175490. It is in
+the middle of the range of `ActiveWorldModel`, but many unrelated modules
+call it. It is not a function of ActiveWorldModel. It is a `static`
+function that a header (`TRON/PSets.h`) defines. Each file that includes
+the header compiles its own copy, and `/Gy` makes each copy a COMDAT.
+`/OPT:ICF` then folds the identical copies into the one copy that the
+linker keeps. Here, that copy is in the ActiveWorldModel object.
+
+When the header defines the function as `static`, all callers match. Also,
+a second file that includes the header does not cause a link failure. A
+non-`static` definition in the header causes a link failure with a
+duplicate symbol (tron20src 01fb0a8).
+
+Thus, if one small function is inside the address range of one module,
+and unrelated modules call it, try it as a `static` function in a header.
+Do this before you give it to that module. The same rule applies to the
+scorer in reverse. The object that the map credits with the copy that stays
+changes with the link, not with the source (see the last paragraph of
+[the declaration count](#the-declaration-count-is-a-symbol-count-mod-64)).
+
+## A file outside the precompiled header emits the header's initializers itself
+
+With a precompiled header (PCH), VC6 emits the dynamic initializers of a
+header once, in the `/Yc` object. An example is the `math_phys.h` group:
+`PI` by `fpatan`, `PI_2`, the `WORLD_*` vectors, nine thunks and bodies. A
+file that compiles without the PCH emits its own copy. Thus, the objects
+whose retail range starts with that group are exactly the objects outside
+the PCH.
+
+nolf2src read the list from the retail layout. Then it gave `server.dll`
+and `Lithtech.exe` the `/Yu"bdefs.h"` option that their projects had. In
+`server.dll`, the number of objects with the group fell from 100 to the
+retail 19 (0214448). In `Lithtech.exe`, it fell from 276 to 61, and retail
+has 56 (188a94b). tron20src compiles `SubroutineDataMgr.cpp` without the
+PCH, because its retail range has its own copy of the initializers for the
+constants (CShell 0x10084080..0x10084222; 5aca299).
+
+The PCH has side effects:
+
+- `/Yu` also skips all lines above the `#include` of the precompiled
+  header. This includes `#pragma optimize` lines. nolf2src's
+  `intersectsweptsphere.cpp` matched only when `/Yu` skipped these lines.
+- One file (`udpdriver.cpp`) lost a match under `/Yu`, so it stays outside
+  the PCH.
+
+[16-tu-mapping](16_tu_mapping.md) tells how to use the initializer group to
+identify a translation unit.
+
 ## An inlined callee's temporary lives in a dead parameter slot
 
 `ILTStream::GetPos()` and `GetLen()` are inline helpers in `iltstream.h`;
@@ -1905,6 +2122,113 @@ counts divisions. Two consequences worth having:
 The pool remains a statement-order witness (see
 [11-large-functions](11_large_functions.md)), but its dead
 entries are now readable too rather than being noise to be apologised for.
+
+## icl orders a float sum's products by how each operand is addressed
+
+icl 4.0 sorts the products of a float sum itself. It also selects which
+operand of each product it loads and which operand it folds into the
+`fmul`. Neither choice follows the source order. Both follow the ADDRESS
+FORM of each operand. Examples are a matrix member (`pMat->m[3][0]`)
+against a float pointer to the same matrix (`f[12]`), and a vector member
+(`pFrom->x`) against the float pointer of the quaternion (`pQ1[0]`).
+
+The dot product of `quat_Slerp` (0x10073500) had four bytes of difference.
+Only the w and z products had their operands in the opposite order:
+
+```
+	shipped:  flds pQ1[3] ; fmuls pQ2[3]
+	ours:     flds pQ2[3] ; fmuls pQ1[3]       (and the same for [2])
+```
+
+These changes did not move it: the 24 term orders, the 16 operand orders,
+the four parenthesisations and the 720 declaration orders. A different
+spelling made it identical. We wrote x of the first quaternion, and z and
+w of the second quaternion, as members. We wrote the other operands
+through the pointers:
+
+```c
+cosom = pFrom->x*pQ2[0] + pQ1[1]*pQ2[1] + pQ1[2]*pTo->z + pQ1[3]*pTo->w;
+```
+
+**The method is a mechanical sweep, not reasoning.** Each operand has two
+spellings, so a row of n operands has 2^n spellings. Make all of them,
+build each one, and keep the identical ones. The results were:
+
+- `quat_Slerp`: 3 of 256 were identical.
+- The transform at 0x1000f2c0: 80 of 3072 were identical. All of them
+  spelled `m[2][1]` of the z row through the float pointer.
+- 0x1005a550: 3 of 256 were identical, with the pointer declared inside the
+  loop. With the pointer declared before the loop, the result had 12 bytes
+  of difference.
+
+Variable names have no effect (we measured 16 pairs). nolfsrc 7f760cc
+closed three functions with this method, and af650bc closed three more.
+One of them was a copy of `MatVMul_H` from `ltmatrix.h`, with two matrix
+terms of the y row through a pointer (8 of 128). Another was `quat_Mul`,
+with its first row through pointers to the vector parts of the quaternions
+(10 of 625).
+
+The sweep does not cover two things:
+
+- The order can change with the functions that the compiler compiled
+  before it in the same file (see the last paragraph of
+  [icl's `/Qip`](#icls-register-calling-convention-is-qip-and-it-is-reproducible)).
+- `w7_1005a550.cpp` records that the order changes with the length of the
+  NAME of the source file. Thus, something like heap state controls the
+  icl sum order.
+
+Do the sweep in the file where the function will stay, with its final
+name.
+
+## icl sinks a failure return to the function's end unless the source nests it
+
+icl places an early-out block by the structure of the source. Examples of
+such a block are `return 0`, or a bind failure that goes directly to the
+epilogue. Two spellings look equivalent, but they move the block to the
+end of the function. There, the block comes after code that the shipped
+build puts after it:
+
+- **A goto out of the middle.** `0x100124a4` draws lightmapped world
+  polygons (8353 bytes). Its bind-failure block stays at 0x10014289, after
+  the draw of the else arm and before the tail. This occurs only when the
+  bind and the draw are the BODY of the test that guards them:
+
+  ```c
+  if (!g_1008ae20)
+  {
+  	if (b88)
+  	{
+  		if (!sub_1000efa0(pObj, g_1008d7cc))
+  		{
+  			sub_10024020(pObj);
+  			return;          // stays at 0x10014289
+  		}
+  	}
+  	...draw...
+  }
+  ```
+
+  If you write `if (g_1008ae20) goto L_Done;` and then the bind, icl sinks
+  the failure block to the end. Any if/else over only the bind also sinks
+  it (nolfsrc af650bc made the function identical).
+- **A direct test on the result of an inline.** `0x1006f540` (6096 bytes)
+  transforms, clips and projects through one inline. Keep the result of the
+  inline in a local, and test the local. Then the `return 0` block stays at
+  0x10070bdd, between the clip arm and the draw. The epilogue, to which the
+  `return 1` jumps back, stays there too. If you write
+  `if (!XFormClip(...))`, or the same logic with gotos, icl sinks the block
+  after the draw (nolfsrc 71a120c; the function is still near for a
+  different reason).
+
+Thus, if a shipped cold block is in the middle of the function and our
+block is at the end, do these steps before you try other changes:
+
+1. Change the structure to nested blocks.
+2. Give the result of the inline a name.
+
+These steps do not solve the ORDER of a number of sunk blocks. The two
+deferral pops of 0x100729c0 still sink in the incorrect order (nolfsrc
+984ccc2).
 
 ## The dividing line: ORDERING is source-reachable, ALLOCATION is not
 
@@ -2509,3 +2833,107 @@ these was a source difference; none was the compiler's whim.
   the shipped `cmp; jae <return>; jmp top` tail; `for (j...)` never rotates.
 * **`*(volatile float*)&x` at one read site** forces the store+reload shipped
   shows (`w_PointInPoly`).
+
+## cl 9044 allocates around callees it has already compiled: definition order is retail's order
+
+In VC6 revisions 8168..9782, the definition position of a callee decides
+if the compiler can inline it
+([the inliner is forward-only](#the-inliner-is-forward-only-and-inline-is-what-admits-a-big-helper)).
+But no measurement shows that the position changes the registers of a
+caller around a call that stays a call. cl 9044 is different. cl 9044 is
+SP5 with the Processor Pack, the compiler of the AvP2 `lithtech.exe` and
+`server.dll`.
+
+When cl 9044 compiled a callee before in the same file, it knows which
+registers that callee does not change. The caller then keeps values in
+scratch registers across the call. AvP2's `at_UpdateStringKeys`
+(0x10001249) calls `at_Reset`, which is the function directly above it.
+It keeps the tracker in `%edx` across that call. Usually, a call destroys
+the contents of `%edx`:
+
+```
+	1000124e:  mov  0x8(%ebp),%edx      ; the tracker
+	10001254:  push %edx
+	10001255:  call 0x1000121e          ; at_Reset
+	1000125a:  movzwl 0x38(%edx),%eax   ; still in %edx
+```
+
+When we compiled `at_Reset` after it, our build loaded the tracker again.
+The rule also applies in the other direction. Retail's
+`sm_SendObjectInfo2` loads its message from the frame again after each
+flush (0x1002f4dc..). The reason is that `GetSpaceLeft` (0x10011e6f) comes
+after all its callers in the retail file. When the body was above them,
+our build kept the message in `%ecx` across the call.
+
+Also, retail's `sub_10027918` comes ABOVE the filter that it calls two
+times, `sub_10027be0` (AvP2 0x1003036d, 0x10030624). cl 9044 did not see
+the body of the filter. Thus it keeps the child in the callee-saved `%ebx`
+across the two calls, as retail does, and not in `%edx`.
+
+Thus, in a cl 9044 image, **definition order is part of the source**. Put
+each function where the retail layout puts it. Put callees above or below
+their callers as the addresses show. Do not use an order only because it
+is easy. avp2src made these moves:
+
+- It moved `ComputeRadius` and `at_UpdateStringKeys` into `modelanim.cpp`,
+  next to `at_Reset` (4cd90f8, which records cl 9044 as the AvP2
+  compiler).
+- It put `FindByName` of `clientmusic` after `CDMSegment::GetName`
+  (f2e92a1).
+- It moved `sub_10027918` and `GetSpaceLeft` after their callers in
+  `smgr.cpp` (92cf850).
+- It put `fs_FindFileInTrees` above `se_LoadFile`, `console.cpp` in the
+  retail order, `world_PointInsideCB` after `bsp_PointInside`, and
+  `str_FormatMessage` last (aa9b2a9).
+
+The same logic decides if a function must be `inline`. In the AvP2 server,
+`sub_10027be0` is a usual function. The reason is that if `/O1` does not
+expand an inline, its caller does not get the register data of the callee.
+
+Thus, if a cl 9044 function has a register rotation around a call, first
+find where the callee is defined.
+
+## cl 13.10 compiles a function only after every later-defined function it calls
+
+Visual C++ .NET 2003 (cl 13.10, Contract J.A.C.K.) does not emit functions
+in definition order. This applies to an object without `/Gy`. `/Ox` does
+not imply `/Gy`, but `/O2` does, and cl 13.10 has no `/Gy-`. In such an
+object, the out-of-line functions stay in one `.text`, in the order in
+which the compiler FINISHED them. The compiler finishes a function only
+after it compiles all the functions that it calls and that the file
+defines later. Thus a forward call defers a function, not inlining.
+
+Template instantiations come at the end, in order of call depth. The
+precompiled header also changes the order:
+
+- With a PCH that includes `s_dx8.h` and the STL, the inline functions of
+  the header come after the code of the file. A dozen functions are
+  deferred.
+- With no PCH, the `.bss` order of the header constants is the order of
+  the compiler, not the definition order.
+
+The source of these results is cjacksrc `docs/PLAN.md`, for `SndDrv.dll`.
+That file is identical in all items that the scorer can examine. Examine
+each VC6 order rule above before you use it with cl 13.10 (cjacksrc
+`progress/COMPILERS.md`).
+
+**It is not known which copy `/OPT:ICF` keeps.** The template tail of
+`SndDrv.dll` (0x10007af0..0x1000834f) has two pairs of identical
+instantiations that the linker folds. For each pair, our build keeps the
+other copy, not the copy that retail keeps. The pairs are `_Uninit_copy`
+and `vector::_Ucopy` for `vector<ACMDRIVERDETAILS>`, in pointer and
+iterator versions. This moves code inside the tail. It also moves all the
+vtable slots and relocations that point there.
+
+The experiments found these results:
+
+- For functions with an exception handler, the linker keeps the copy that
+  comes first in the object (the `.sxdata` order).
+- For the other functions, the linker keeps the copy that its reference
+  walk finds first.
+
+The retail choice shows that its object emitted the iterator
+`_Uninit_copy` before the pointer version. Our build compiles it one round
+later, because it waits for `const_iterator::operator!=`. We did not find
+the source shape that changes this order (cjacksrc `docs/PLAN.md`, "Where
+it stops").
