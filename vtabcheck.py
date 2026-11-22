@@ -1188,12 +1188,13 @@ HASH_HEADER = """\
 """
 
 
-ANON = re.compile(r"\?%[^@]*@")
+ANON = re.compile(r"\?%[^@]*@|\?A0x[0-9a-f]+@")
 
 
 def anon(sym):
     """A symbol with its anonymous namespace's name left out: VC6 names it
-    `?%<source path><number>@`, and the number differs from one checkout
+    `?%<source path><number>@`, VC7.1 `?A0x<hash>@`, and the number or hash
+    differs from one checkout
     or build of the same source to the next."""
     return ANON.sub("?%@", sym)
 
