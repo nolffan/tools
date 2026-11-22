@@ -36,6 +36,7 @@ Usage:
 import glob
 import hashlib
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -318,6 +319,9 @@ def our_constants(data):
     return out
 
 
+ANON_NUMBER = re.compile(r"(\?%[^@]*?)\d+@")
+
+
 def check_ci():
     """Our constants against the hashes progress/hashes/fpconst.tsv
     records: exit 1 on one that differs or is no longer there."""
@@ -349,9 +353,18 @@ def check_ci():
         checked = bad = 0
         for mod, rows in sorted(want[t["label"]].items()):
             consts = our_constants(mods[mod]) if mod in mods else {}
+            # another build's name of a symbol in an anonymous namespace:
+            # VC6 numbers it `?%<source path><number>@`, and the number
+            # differs from one checkout to the next
+            by_number = {}
+            for (s_, o_), c_ in consts.items():
+                by_number.setdefault((ANON_NUMBER.sub(r"\1@", s_), o_), []).append(c_)
             for sym, off, width, h in rows:
                 checked += 1
                 c = consts.get((sym, off))
+                if c is None:
+                    same = by_number.get((ANON_NUMBER.sub(r"\1@", sym), off), [])
+                    c = same[0] if len(same) == 1 else None
                 if c is None or len(c) != width or hashlib.sha256(c).hexdigest() != h:
                     bad += 1
                     what = "gone" if c is None else repr(struct.unpack(
