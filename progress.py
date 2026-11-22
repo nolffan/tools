@@ -3610,8 +3610,10 @@ def _hash_rows(tgt, rows, funcs, unpadded, text, tva, layout):
     label = tgt["label"]
     ours = built_image(tgt)
     HASH_LOST[label] = []
-    if not ours or not layout:
+    if not ours:
         return []
+    # (no map: an image linked incrementally, as a Debug DLL is; its rows
+    # are then its objects' own code, the `obj:` locator below)
     ope = Pe(os.path.join(REPO, ours))
     lay = hashcheck.Layout(layout)
     otva, otvs, otrp = ope.secs[".text"]
@@ -3655,7 +3657,7 @@ def _hash_rows(tgt, rows, funcs, unpadded, text, tva, layout):
         # another module, if only one has it; or, folded there by our link
         # (/OPT:ICF), at the start of another function of the same bytes
         mod, sym = n.split(":", 1)
-        named = [layout.get((mod.lower(), sym))]
+        named = [layout.get((mod.lower(), sym))] if layout else []
         if len(lay.by_sym.get(sym, ())) == 1:
             named.append(next(iter(lay.by_sym[sym])))
         loc = None
