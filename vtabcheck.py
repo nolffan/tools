@@ -1198,6 +1198,16 @@ def anon(sym):
     return ANON.sub("?%@", sym)
 
 
+ANON_NUMBER = re.compile(r"(\?%[^@]*?)\d+@")
+
+
+def anon_path(sym):
+    """A symbol with only its anonymous namespace's number left out: the
+    source path stays, so that a function of the same name in the anonymous
+    namespaces of two source files stays two names."""
+    return ANON_NUMBER.sub(r"\1@", sym)
+
+
 def names_sha(names):
     import hashlib
     return hashlib.sha256("\n".join(anon(n) for n in names).encode("latin-1")).hexdigest()
@@ -1257,14 +1267,17 @@ def check_ci():
         aliases = load_aliases(os.path.join(REPO, auto)) if \
             os.path.exists(os.path.join(REPO, auto)) else {}
 
-        by_anon = {}
+        by_anon, by_path = {}, {}
         for n_, a_ in s2a.items():
             by_anon.setdefault(anon(n_), set()).add(a_)
+            by_path.setdefault(anon_path(n_), set()).add(a_)
 
         def resolve(sym):
             k = 0
             while sym not in s2a and sym in aliases and k < 10:
                 sym, k = aliases[sym], k + 1
+            if sym not in s2a and len(by_path.get(anon_path(sym), ())) == 1:
+                return next(iter(by_path[anon_path(sym)]))  # another build's number
             if sym not in s2a and len(by_anon.get(anon(sym), ())) == 1:
                 return next(iter(by_anon[anon(sym)]))      # another build's name
             return s2a.get(sym)
