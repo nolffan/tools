@@ -3,11 +3,12 @@
 
   tools/jupitersrc.py <sdk-source> <src>
 
-<sdk-source> is the SDK's "Source Code" file group as rez/ installs it
-(rez/sdk/lithtech-jupiter-51/, checked against rez/sdk.sha256: see
-build/jupiter.sh): the game code and libraries as Monolith gave them
-to engine licensees in March 2002, laid out as the source release is
-(Game/, Engine/, Libs/).
+<sdk-source> is the directory of the SDK's "Source Code" file group, as the
+project installs it from your own image of the SDK's CD (nolf2src:
+out/retail/lithtech-jupiter-51/, from build/discs.py and
+build/sdk-files.txt: see build/jupiter.sh): the game code and libraries as
+Monolith gave them to engine licensees in March 2002, laid out as the source
+release is (Game/, Engine/, Libs/).
 
 Monolith's release has ServerDir.dll's headers and import library only.
 The SDK has the source of its library: WONAPI (Game/Libs/WONAPI/, the
@@ -67,7 +68,7 @@ def main():
         sys.exit(__doc__)
     sdk, src = sys.argv[1], sys.argv[2]
     if not os.path.isfile(os.path.join(sdk, "Game", "Libs", "WONAPI", "WONAPI.dsp")):
-        sys.exit(f"jupitersrc: {sdk} is not the SDK's source (rez/install-games.sh lithtech-jupiter-51 installs it)")
+        sys.exit(f"jupitersrc: {sdk} is not the SDK's source (install it from the SDK's CD first)")
     with tempfile.TemporaryDirectory(prefix="jupitersrc.") as stage:
         rels = []
         for d, names in WANTED:
