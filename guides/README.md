@@ -109,21 +109,23 @@ which compiler revision built which binary.
     `progress/`, checking a change with `make progress`, recording it with
     `make progress-update`, reading the worklists, correcting the
     enumeration, and adapting the scorer to another project.
-15. **[15-sibling-games](15_sibling_games.md)** -- how to start a new game
-    from the reconstruction of a related game. Select the base tree and find
-    its date. Merge the game's own source onto it. Correct the interface and
-    class layouts before you work on functions. Use the first build as a gate.
+15. **[15-related-source](15_related_source.md)** -- how to start a
+    reconstruction from related source: a sibling game on the same engine,
+    an SDK or source release, a developer snapshot or a demo. Select the base
+    and find its date. Merge the game's own source onto it. Correct the
+    interface and class layouts before you work on functions. Use the first
+    build as a gate.
 16. **[16-tu-mapping](16_tu_mapping.md)** -- how to divide an image that has
     no symbols into its translation units. The addresses show the project
     and link structure: padding, initializer tables, `.bss`, boundary
     markers and function order.
-17. **[17-tools-and-mfc](17_tools_and_mfc.md)** -- the development tools:
-    MFC applications, their resources, behaviour tests against retail, and
-    the file formats that the tools read.
-18. **[18-modern-builds](18_modern_builds.md)** -- the modern build variant.
-    It shows the changes that each game can use again (presentation under
-    Wine, input, frame rate, replacement middleware). It also shows where
-    each game has these changes.
+17. **[17-applications](17_applications.md)** -- how to decompile tools and
+    GUI applications: source from a related version, a statically linked
+    framework, resources, behaviour tests against the shipped tool, and file
+    formats.
+18. **[18-modern-builds](18_modern_builds.md)** -- how to build a modern
+    variant of a reconstructed game and keep the release build identical:
+    presentation, input, frame rate, replacement middleware and portability.
 
 ## Picking a target
 
