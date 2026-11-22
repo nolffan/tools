@@ -23,10 +23,14 @@
                                                        resource script
                                                        compiles
 
-<retaildir> is No One Lives Forever 2 (Europe) with the English 1.3 update,
-as the rez/ submodule installs it (rez/install-games.sh nolf2-eu-1.3:
-rez/games/nolf2-eu-1.3/, see build/retail.sh). It is only read: nothing in it
-is run, and the build never writes to it.
+<retaildir> is the retail game as the project installs it from your own disc
+images (build/retail.sh: out/retail/<release>/, for example
+out/retail/nolf2-eu-1.3/, No One Lives Forever 2 (Europe) with the English
+1.3 update). Its list of files is <retaildir>/MANIFEST.txt
+(`<path>\\t<origin>`), or, if there is no MANIFEST.txt, the `F` rows of
+<retaildir>/.retail-files, the copy of build/retail-files.txt that the
+project's build/discs.py writes (`F\\t<path>\\t...`). It is only read:
+nothing in it is run, and the build never writes to it.
 
 `resources` is build/all.sh's first step. It copies the game's data: the
 .rez archives, the movies, and the shipped autoexec.cfg and default player
@@ -185,19 +189,26 @@ def is_third_party(name):
 
 
 class Retail:
-    """The installed retail game, read only; rez/'s MANIFEST.txt lists its
-    files (`<path>\\t<origin>`)."""
+    """The installed retail game, read only. Its MANIFEST.txt lists its
+    files (`<path>\\t<origin>`), or else the `F` rows of its .retail-files
+    (`F\\t<path>\\t...`: build/discs.py's copy of build/retail-files.txt)."""
 
     def __init__(self, root):
         self.root = Path(root)
-        man = self.root / "MANIFEST.txt"
-        if not man.exists():
-            sys.exit(f"missing {man} -- install the retail game first (build/retail.sh)")
         self.name = self.root.name
         self.files = []
-        for line in man.read_text().splitlines():
-            if "\t" in line and not line.startswith("#"):
-                self.files.append(line.split("\t", 1)[0])
+        man, lst = self.root / "MANIFEST.txt", self.root / ".retail-files"
+        if man.exists():
+            for line in man.read_text().splitlines():
+                if "\t" in line and not line.startswith("#"):
+                    self.files.append(line.split("\t", 1)[0])
+        elif lst.exists():
+            for line in lst.read_text().splitlines():
+                if line.startswith("F\t"):
+                    self.files.append(line.split("\t")[1])
+        else:
+            sys.exit(f"{self.root} is not an install of the retail game (no MANIFEST.txt "
+                     "or .retail-files) -- install it first (make retail, build/retail.sh)")
 
     def find(self, path):
         for p in self.files:
