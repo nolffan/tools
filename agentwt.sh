@@ -9,14 +9,14 @@
 #
 #   toolchains/       the compilers and SDKs (a submodule, not checked out
 #                     in a worktree; ext/toolchains/ in the newer layout)
-#   rez/              (or ext/rez/) the installed retail game (build/retail.sh), the
-#                     Jupiter SDK (rez/sdk/, build/jupiter.sh) and the demo
-#                     and patch artifacts (a submodule too)
 #   out/reference/    the retail images the checks compare against
 #                     (build/reference.sh)
-#   out/retail/, isos/  the installed retail game and the disc images, in a
-#                     project that installs it from the player's own discs
-#                     (nolfsrc: build/discs.py)
+#   out/retail/       what the project installs from your own disc images
+#                     and installers (build/discs.py): the retail game
+#                     (build/retail.sh) and, in nolf2src, the Jupiter SDK's
+#                     source (build/jupiter.sh) and the demo's engine
+#   isos/             your disc images and installers, which build/discs.py
+#                     reads
 #   ext/ffmpeg/       FFmpeg, which the modern build's Bink player is built
 #                     on (build/ext.sh; a submodule)
 #
@@ -70,7 +70,7 @@ add)
         git -C "$dir/$t" checkout -q "$(git -C "$dir" ls-tree HEAD "$t" | awk '{print $3}')"
     fi
     # the submodules' contents and the reference images, hard-linked
-    for d in toolchains rez ext/toolchains ext/rez out/reference out/retail isos ext/ffmpeg; do
+    for d in toolchains ext/toolchains out/reference out/retail isos ext/ffmpeg; do
         [ -d "$REPO/$d" ] || continue
         mkdir -p "$dir/$d"
         for t in "$REPO/$d"/* "$REPO/$d"/.[!.]*; do
