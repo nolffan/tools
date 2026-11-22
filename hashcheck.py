@@ -95,12 +95,13 @@ def sha(b):
     return hashlib.sha256(bytes(b)).hexdigest()
 
 
-ANON = re.compile(r"\?%[^@]*@")
+ANON = re.compile(r"\?%[^@]*@|\?A0x[0-9a-f]+@")
 
 
 def anon(sym):
     """A symbol with its anonymous namespace's name left out: VC6 names it
-    `?%<source path><number>@`, and the number differs from one checkout
+    `?%<source path><number>@`, VC7.1 `?A0x<hash>@`, and the number or hash
+    differs from one checkout
     or build of the same source to the next."""
     return ANON.sub("?%@", sym)
 
@@ -261,7 +262,6 @@ def check(no_art=False):
         return lib_code[label]
 
     resources = {}
-    anon = re.compile(r"\?%[^@]*@")
     for label in sorted(by_label):
         ok = n = 0
         for r in by_label[label]:
@@ -331,9 +331,9 @@ def check(no_art=False):
                     bad.append((label, sym, "no build of ours"))
                     continue
                 mine = code.get(sym)
-                if mine is None and anon.search(sym):
-                    key = anon.sub("?%@", sym)
-                    mine = next((c for s, c in code.items() if anon.sub("?%@", s) == key), None)
+                if mine is None and ANON.search(sym):
+                    key = anon(sym)
+                    mine = next((c for s, c in code.items() if anon(s) == key), None)
                 if mine is None:
                     bad.append((label, sym, "not in our library"))
                 elif sha(mine) != want:

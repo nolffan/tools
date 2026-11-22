@@ -243,6 +243,7 @@ def target_objs(tgt_mod, t):
 
 
 HASH_FILE = "fpconst.tsv"
+ANON = re.compile(r"\?%[^@]*@|\?A0x[0-9a-f]+@")
 HASH_HEADER = """\
 ## The floating-point constants tools/fpconst.py last checked against the
 ## retail images, for the check without them (`fpconst.py --targets --ci`;
@@ -359,11 +360,19 @@ def check_ci():
             by_number = {}
             for (s_, o_), c_ in consts.items():
                 by_number.setdefault((ANON_NUMBER.sub(r"\1@", s_), o_), []).append(c_)
+            # another build's name of a function in an anonymous namespace
+            # (VC6 `?%<path><number>@`, VC7.1 `?A0x<hash>@`: they differ from
+            # one checkout to the next): the one of the same name without it
+            by_anon = {}
+            for (s_, o_), c_ in consts.items():
+                by_anon.setdefault((ANON.sub("?%@", s_), o_), []).append(c_)
             for sym, off, width, h in rows:
                 checked += 1
                 c = consts.get((sym, off))
                 if c is None:
                     same = by_number.get((ANON_NUMBER.sub(r"\1@", sym), off), [])
+                    if len(same) != 1:
+                        same = by_anon.get((ANON.sub("?%@", sym), off), [])
                     c = same[0] if len(same) == 1 else None
                 if c is None or len(c) != width or hashlib.sha256(c).hexdigest() != h:
                     bad += 1
