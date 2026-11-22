@@ -100,3 +100,110 @@ Once a target links, `tools/vtabcheck.py` closes the loop the other way: it
 compares our linked image's vtables with the shipped ones slot by slot, which
 catches a constructor that is byte-identical (the vptr store is a masked
 relocation) while installing a stand-in table that is too short.
+
+## Where a table ends: what vtabcheck learned
+
+`vtabcheck.py --targets` is now a gate of `make progress`
+([14](14_progress.md#what-a-run-rests-on)). Thus, if the check reads a
+table as too long, the build fails. No marker in `.rdata` shows the end of
+a vtable. In each of these cases, the check read past the end of a table
+into the data after it:
+
+* **An MFC message map.** MFC puts the `AFX_MSGMAP` of a class immediately
+  after its vtable. The first word of the map points at `GetThisMessageMap`
+  (`_GetBaseMessageMap` before MFC 7). This is code, so the check reads it
+  as one more slot. In Contract J.A.C.K., the shipped `CMoveDialog` table
+  read as 89 slots and our table had 88 slots. All 88 slots agreed
+  (cjacksrc 6937926). Now, if such a pointer is past the end of our table,
+  it also ends the shipped table (tools 568aedf, in the slot comparison of
+  `vtabcheck.py`).
+
+  The same macro is also a landmark in code. `BEGIN_MESSAGE_MAP` emits a
+  message-map accessor at the position of the macro in its `.cpp` file.
+  Thus the accessor shows the module of the functions near it, and their
+  position in that module. In DEdit, `InitTracker` at 0x452bb7 is
+  immediately after the `GetMessageMap` of `CRegionView` at 0x452bb1. This
+  evidence moved `InitTracker` from its own file back into `RegionView.cpp`
+  (lithtools 7a5d6ab).
+* **Folded template tables in sequence.** In DEdit, the compiler folded the
+  code of the `CMoArray<T*>` instantiations into one set of functions. Thus
+  three 12-slot vtables (0x4da860, 0x4da890, 0x4da8c0) are identical, and
+  no symbol or reference separates them. The check read them as one
+  36-slot table. Our table matches the first 12 slots. `vtab-known.txt`
+  records the table as a read-on (lithtools d0118e2).
+* **No reference range.** The check also cuts a shipped table at an
+  address where the image refers into the table. For this, the check must
+  know the range of tables to examine. Only the NOLF engine images have a
+  `vtabaudit` table. For other targets, the range was 0..0x10000, and the
+  check cut nothing. Thus an abstract table with no placed neighbour
+  continued into the next table. In Object.lto, `CAIPoodleState` continued
+  into `CAIPoodleStateDischarge`. Now, if a target has no audited tables,
+  the check uses the `.rdata` of the shipped image as its range (tools
+  e3a10a3).
+* **A statically linked `_purecall`.** Abstract slots hold `_purecall`. The
+  check finds it as the `jmp [IAT]` thunk of `MSVCRT!_purecall`. An image
+  that links the CRT statically has no such thunk. Thus the check could not
+  verify the last slot of each abstract table. For such a target, give the
+  address as `purecall` in `progress/targets.py`. nolfsrc f91c788 did this
+  for `CShell.dll` and `Object.lto`. `lithtech.exe` already had it.
+
+## When placement votes: ties and twins
+
+The scorer places the functions of a class by vtable slot. Our table and
+the shipped table vote on which retail row each of our virtuals is. These
+votes can go wrong in a small number of known ways.
+
+* **A tie places nothing.** Some sibling classes inherit the virtuals of a
+  base without change. These classes have the same functions in those
+  slots. When the virtuals of the base are identical, the table of each
+  sibling gets the same votes. Before the fix, the first table won. In
+  Primal Hunt, the virtuals of `CProxGrenade` went to the retail rows of
+  `CPredDisk`. Now the scorer does not place a table that ties with another
+  table (`progress.py`, tools c83182e).
+
+avp2src builds the full interface vtables of its engines from the
+placements of the scoreboard. Its `build/vtables/mkvtables.py` makes the
+tables, and `tools/mkvtabobj.py` links them. When we booted these engines,
+we found three more rules. They apply to all tables that are built or
+checked this way:
+
+* **Twins with the same masked bytes.** In `ILTServer`, slot 46
+  (`CreateString`) held `LAlloc::Alloc`. The two functions have the same
+  bytes when the relocations are masked (avp2src 27eb79d). In `ILTModel`,
+  `GetNode` and `GetSocket` each went to the address of the other
+  (baebb5b). To tell twins apart, examine what their operands reach. If a
+  call in a candidate reaches a different function of ours than the call in
+  retail, the scorer rejects the candidate. The scorer also compares twins
+  outside the union of the two masks.
+* **A placement that its own calls refute gets no vote.** The swapped
+  `GetNode` and `GetSocket` then voted for the wrong string addresses
+  (baebb5b).
+* **A function of the class wins over a stub of the base.** The table of
+  `CObjWorldModel` kept the empty inherited virtuals of `CObjBase` in eight
+  slots. One of these was `WantsTree` (27eb79d). Another was slot 7,
+  `OnFoundInBox`. The frustum walk of the world tree calls it on each world
+  model (baebb5b). As a result, the world rendered black. Now a placed
+  function of the class itself wins over the stub of its base, near-paired
+  or not. The scorer reads the hierarchy from the sources.
+
+The scorer showed no problem with any of these cases. We found them when we
+ran the game
+([05](05_exe_and_engine.md#running-the-thing--nears-have-to-execute)).
+
+## Classes with RTTI
+
+If a game was built with `/GR`, both images carry RTTI for each polymorphic
+class. RTTI pairs tables without a header. A pointer to the complete object
+locator comes immediately before each vtable. The locator names the type
+descriptor (`.?AV<class>@@`). Through the class hierarchy descriptor, the
+locator also names the bases and their offsets.
+
+tron20src uses this method to pair the vtables of its game with the retail
+vtables. It also checks hand-edited headers with a probe. The probe is a
+member pointer to each virtual. The compiled vcall thunk of that pointer
+names the slot that VC6 gives the virtual. With this probe, tron20src found
+that VC6 puts the virtual overloads of a name in the **reverse** of their
+declaration order (tron20src b4717cd, 4e170d2). These helpers are local
+scratch scripts of tron20src, in its gitignored `out/work/`. They are not
+tools of this repository. [15](15_sibling_games.md) gives more detail about
+the method.
