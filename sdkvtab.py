@@ -16,7 +16,7 @@ Evidence: tron20src 4e170d2 (ILTDrawPrim::DrawPrim, which retail calls on
 the two sides of the group confirm) and a probe with cl 8168 and cl 8966
 (guides/09_codegen_patterns.md). This tool lists the plain declaration
 order. For an interface with overloads, compare its slots with retail calls
-before you use them (guides/15_sibling_games.md).
+before you use them (guides/15_related_source.md).
 
 Usage:
   sdkvtab.py <Class> [--inc=DIR]   print slot, name

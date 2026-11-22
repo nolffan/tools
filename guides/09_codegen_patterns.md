@@ -803,7 +803,7 @@ Each of them changes a rule that the VC6 entries accept as true:
   The cjacksrc notes tell you to examine each VC6 rule in this file before
   you use it with cl 13.10 (cjacksrc `progress/COMPILERS.md`, Notes).
 
-[15-sibling-games](15_sibling_games.md) tells how the games share source
+[15-related-source](15_related_source.md) tells how the games share source
 and evidence. This file keeps only the codegen.
 
 ---
@@ -1453,7 +1453,7 @@ rule is correct. ILTDrawPrim has a `DrawPrim` overload that only Tron has.
 We had to declare it between the `LT_POLYGT4` and `LT_POLYFT4` overloads.
 Only then did the `LT_POLYFT4` overload get the retail slot `+0x5c`. We
 examined this against the two calls on each side of it (CShell 0x1002948a,
-0x100220db; tron20src 4e170d2). See [15-sibling-games](15_sibling_games.md).
+0x100220db; tron20src 4e170d2). See [15-related-source](15_related_source.md).
 
 NOTE: We did not probe overloads that override virtuals of a base class.
 These overloads get the slots of the base class.
