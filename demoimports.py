@@ -26,7 +26,7 @@ sha256 of out/reference/Lithtech.exe, or by --game=<name>:
           bytes of the `ff 15` they replace; `.text` 0x536000..0x53b000
           encrypted.
   tron2   Tron 2.0 1.030 (Update 2, 2003-10) and Monolith's developer
-          build of 2003-08-05 (rez/'s installed devtools/tron2-devbuild:
+          build of 2003-08-05 (`tron2-devbuild`:
           unprotected, VC6 SP5 8966 against retail's 8168, two months
           older): 1,372 sites redirected to 24 slots in `.khpb`
           (0x635000..0x6e9000), and 91 more rewritten as a direct call
@@ -34,12 +34,24 @@ sha256 of out/reference/Lithtech.exe, or by --game=<name>:
           0x60ff40) plus a junk byte, as in CJ's; `.text` 0x572000..
           0x577000 encrypted.
 
-  demoimports.py extract   unpack the demo's engine into out/<demo>/
-                           (nolf2: from rez/'s artifact, rez/assemble-
-                           artifacts.sh demos first; cjack: from
-                           rez/demos/), with rez/tools/sfxcab.py and
-                           rez/tools/unshield; tron2: copied from rez/'s
-                           installed developer build
+  demoimports.py extract <source> [--unshield=<path>] [--sfxcab=<path>]
+                           put the demo's engine into out/<demo>/. <source>
+                           is one of:
+                           - a directory that holds the demo's engine
+                             files (Lithtech.exe; nolf2: also server.dll),
+                             for example the project's own install of the
+                             demo (nolf2src: out/retail/nolf2-mpdemo/, from
+                             make demo) or of the developer build (tron2).
+                             The files are copied.
+                           - the demo's installer (nolf2:
+                             nolf2_mpdemo_en.exe; cjack:
+                             contractjack_demo_sp.exe), your own copy. It
+                             is unpacked with sfxcab.py and unshield: give
+                             their paths with --sfxcab and --unshield, or
+                             with $SFXCAB and $UNSHIELD. Nothing of the
+                             installer is run.
+                           Each file is checked against the profile's
+                           sha256.
   demoimports.py map [--csv=<csv>]
                            pair every redirected retail call site with the
                            demo's instruction and name the import it calls;
@@ -94,10 +106,9 @@ import shutil
 import struct
 import subprocess
 import sys
-import tarfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import PROJECT as ROOT, sibling  # noqa: E402
+from layout import PROJECT as ROOT  # noqa: E402
 RETAIL = os.path.join(ROOT, "out/reference/Lithtech.exe")
 
 # Per game: the retail engine (its sha256), the demo, SecuROM's redirect
@@ -105,8 +116,6 @@ RETAIL = os.path.join(ROOT, "out/reference/Lithtech.exe")
 PROFILES = {
     "nolf2": dict(
         retail_sha256="4e83a4be52e10586d93077ef746874a751a25ad4d079d79347d92fce02e172e9",
-        artifact="artifacts/demos/nolf2_mpdemo_en.exe.tar.xz",
-        member="nolf2_mpdemo_en.exe",
         unshield=["-o", "-g", "Resources"], cab="data1.cab", group="Resources",
         outdir="out/mpdemo",
         demo_sha256={
@@ -119,7 +128,6 @@ PROFILES = {
         csv="progress/engine/Lithtech-iat-calls.csv"),
     "cjack": dict(
         retail_sha256="7b8a9540e213bf114e098ffce0b9ca08b633343b320f640dc195478ebea533bd",
-        setup="demos/contractjack_demo_sp.exe",
         unshield=["-o", "-g", "Program Files"], cab="data1.hdr", group="Program_Files",
         outdir="out/spdemo",
         demo_sha256={
@@ -132,7 +140,6 @@ PROFILES = {
         csv="progress/engine/Lithtech-iat-calls.csv"),
     "tron2": dict(
         retail_sha256="a10677b1d1121e8ea2859e7b2fc9a12d1e544acc9ce0a61ae822ffad9e8695b4",
-        installed="installed/devtools/tron2-devbuild",
         outdir="out/devbuild",
         demo_sha256={
             "Lithtech.exe": "3d47ed0e16a5e4ab7579336a3b417ddd32c50932a021274a0cfd7dabc8fb9c89",
@@ -243,7 +250,7 @@ def sha(path):
 
 def need_demo():
     if not os.path.exists(DEMO):
-        sys.exit("demoimports: %s is missing -- run `tools/demoimports.py extract`" % os.path.relpath(DEMO, ROOT))
+        sys.exit("demoimports: %s is missing -- run `demoimports.py extract <source>`" % os.path.relpath(DEMO, ROOT))
     if sha(DEMO) != DEMO_SHA256["Lithtech.exe"]:
         sys.exit("demoimports: %s is not the %s demo's engine" % (DEMO, GAME))
     return PE(DEMO)
@@ -251,52 +258,59 @@ def need_demo():
 
 # ---------------------------------------------------------------- extract
 
+def _tool(args, opt, env):
+    """A helper program's path: --<opt>=<path>, else $<env>."""
+    for a in args:
+        if a.startswith("--%s=" % opt):
+            return a.split("=", 1)[1]
+    return os.environ.get(env)
+
+
+def _take(src, name, want):
+    """Copy one of the demo's files into OUTDIR, if its sha256 is right."""
+    got = sha(src)
+    if got != want:
+        sys.exit("demoimports: %s has sha256 %s, expected %s" % (src, got, want))
+    os.makedirs(OUTDIR, exist_ok=True)
+    shutil.copyfile(src, os.path.join(OUTDIR, name))
+    print(os.path.relpath(os.path.join(OUTDIR, name), ROOT))
+
+
 def cmd_extract(args):
-    if "installed" in P:                # already unpacked by rez/'s install
-        os.makedirs(OUTDIR, exist_ok=True)
+    rest = [a for a in args if not a.startswith("--")]
+    if len(rest) != 1:
+        sys.exit("usage: demoimports.py extract <source> [--unshield=<path>] [--sfxcab=<path>]\n"
+                 "  <source>: a directory with the demo's engine, or the demo's installer")
+    source = rest[0]
+    if os.path.isdir(source):           # already installed: copy it
         for name, want in DEMO_SHA256.items():
-            src = os.path.join(sibling("rez"), P["installed"], name)
+            src = os.path.join(source, name)
             if not os.path.exists(src):
-                sys.exit("demoimports: %s is missing (rez/)" % os.path.join(P["installed"], name))
-            got = sha(src)
-            if got != want:
-                sys.exit("demoimports: %s has sha256 %s, expected %s" % (name, got, want))
-            shutil.copyfile(src, os.path.join(OUTDIR, name))
-            print(os.path.relpath(os.path.join(OUTDIR, name), ROOT))
+                sys.exit("demoimports: %s is missing" % src)
+            _take(src, name, want)
         return
-    unshield = os.path.join(sibling("rez"), "tools/unshield/unshield")
-    if not os.access(unshield, os.X_OK):
-        sys.exit("demoimports: rez/tools/unshield/unshield is not built -- `make -C rez/tools/unshield`")
+    if not os.path.isfile(source):
+        sys.exit("demoimports: %s is neither a directory nor a file" % source)
+    if "cab" not in P:
+        sys.exit("demoimports: the %s profile has no installer: give the directory that "
+                 "holds its engine" % GAME)
+    unshield = _tool(args, "unshield", "UNSHIELD")
+    sfxcab = _tool(args, "sfxcab", "SFXCAB")
+    if not unshield or not os.access(unshield, os.X_OK):
+        sys.exit("demoimports: an installer needs unshield: give --unshield=<path> or $UNSHIELD")
+    if not sfxcab or not os.path.isfile(sfxcab):
+        sys.exit("demoimports: an installer needs sfxcab.py: give --sfxcab=<path> or $SFXCAB")
     work = os.path.join(OUTDIR, "work")
     os.makedirs(work, exist_ok=True)
-    if "setup" in P:
-        exe = os.path.join(sibling("rez"), P["setup"])
-        if not os.path.exists(exe):
-            sys.exit("demoimports: %s is missing (rez/)" % P["setup"])
-    else:
-        artifact = os.path.join(sibling("rez"), P["artifact"])
-        if not os.path.exists(artifact):
-            sys.exit("demoimports: %s is missing -- run `rez/assemble-artifacts.sh demos`" % P["artifact"])
-        exe = os.path.join(work, P["member"])
-        if not os.path.exists(exe):
-            with tarfile.open(artifact) as t:
-                m = t.getmember(P["member"])
-                with t.extractfile(m) as f, open(exe, "wb") as g:
-                    shutil.copyfileobj(f, g)
     disk = os.path.join(work, "sfx")
     if not os.path.exists(os.path.join(disk, "Disk1", "data1.hdr")):
-        subprocess.run([sys.executable, "-I", os.path.join(sibling("rez"), "tools/sfxcab.py"), exe, disk], check=True,
+        subprocess.run([sys.executable, "-I", sfxcab, source, disk], check=True,
                        stdout=subprocess.DEVNULL)
     xdir = os.path.join(work, "x")
     subprocess.run([unshield] + P["unshield"] + ["-d", xdir, "x", os.path.join(disk, "Disk1", P["cab"])],
                    check=True, stdout=subprocess.DEVNULL)
     for name, want in DEMO_SHA256.items():
-        src = os.path.join(xdir, P["group"], name)
-        got = sha(src)
-        if got != want:
-            sys.exit("demoimports: %s has sha256 %s, expected %s" % (name, got, want))
-        shutil.copyfile(src, os.path.join(OUTDIR, name))
-        print(os.path.relpath(os.path.join(OUTDIR, name), ROOT))
+        _take(os.path.join(xdir, P["group"], name), name, want)
     shutil.rmtree(work)                 # the unpacked demo: hundreds of MB
 
 
