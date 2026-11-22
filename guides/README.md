@@ -126,6 +126,14 @@ which compiler revision built which binary.
 18. **[18-modern-builds](18_modern_builds.md)** -- how to build a modern
     variant of a reconstructed game and keep the release build identical:
     presentation, input, frame rate, replacement middleware and portability.
+19. **[19-directx-graphics](19_directx_graphics.md)** -- DirectDraw and
+    Direct3D 7, 8 and 9: how to find them in a binary and read their COM
+    calls, what breaks on modern systems and under Wine, and the fixes.
+20. **[20-directmusic](20_directmusic.md)** -- DirectMusic and DirectSound:
+    the same for music and sound.
+21. **[21-directinput](21_directinput.md)** -- DirectInput: the same for the
+    keyboard, the mouse and controllers. Object names are display text, not
+    identifiers.
 
 ## Picking a target
 
