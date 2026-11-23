@@ -114,9 +114,11 @@ class Layout:
         self.by_key = layout or {}
         self.by_sym = {}
         self.by_anon = {}
+        self.by_anon_sym = {}
         for (mod, s), a in self.by_key.items():
             self.by_sym.setdefault(s, set()).add(a)
             self.by_anon.setdefault((mod, anon(s)), set()).add(a)
+            self.by_anon_sym.setdefault(anon(s), set()).add(a)
         self.starts = sorted({a for a in self.by_key.values()})
         self.at = {}
         for k, a in sorted(self.by_key.items()):
@@ -155,6 +157,11 @@ class Layout:
             a = next(iter(self.by_anon[(mod, anon(s))]))   # another build's name
         if a is None and len(self.by_sym.get(s, ())) == 1:
             a = next(iter(self.by_sym[s]))       # the map names another module
+        if a is None and len(self.by_anon_sym.get(anon(s), ())) == 1:
+            # another build's name, and the map names another module: an
+            # identical-code fold can give the folded function the module
+            # of the function it is folded into
+            a = next(iter(self.by_anon_sym[anon(s)]))
         return None if a is None else a + d
 
 
