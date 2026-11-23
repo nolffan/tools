@@ -98,6 +98,16 @@ def sha(b):
 ANON = re.compile(r"\?%[^@]*@|\?A0x[0-9a-f]+@")
 
 
+ANON_NUMBER = re.compile(r"(\?%[^@]*?)[0-9]+@")
+
+
+def anon_path(sym):
+    """A VC6 anonymous-namespace symbol with only the namespace's number left
+    out: `?%<source path>@`. The source path stays, so the copies that two
+    source files make of one helper stay apart."""
+    return ANON_NUMBER.sub(r"\1@", sym)
+
+
 def anon(sym):
     """A symbol with its anonymous namespace's name left out: VC6 names it
     `?%<source path><number>@`, VC7.1 `?A0x<hash>@`, and the number or hash
@@ -115,10 +125,12 @@ class Layout:
         self.by_sym = {}
         self.by_anon = {}
         self.by_anon_sym = {}
+        self.by_path_sym = {}
         for (mod, s), a in self.by_key.items():
             self.by_sym.setdefault(s, set()).add(a)
             self.by_anon.setdefault((mod, anon(s)), set()).add(a)
             self.by_anon_sym.setdefault(anon(s), set()).add(a)
+            self.by_path_sym.setdefault(anon_path(s), set()).add(a)
         self.starts = sorted({a for a in self.by_key.values()})
         self.at = {}
         for k, a in sorted(self.by_key.items()):
@@ -162,6 +174,12 @@ class Layout:
             # identical-code fold can give the folded function the module
             # of the function it is folded into
             a = next(iter(self.by_anon_sym[anon(s)]))
+        if a is None and len(self.by_path_sym.get(anon_path(s), ())) == 1:
+            # the same, when other source files have their own copy of the
+            # helper: the source path in the namespace's name tells the
+            # copies apart, and an identical-code fold puts this file's copy
+            # at one address whatever module the map gives it
+            a = next(iter(self.by_path_sym[anon_path(s)]))
         return None if a is None else a + d
 
 
