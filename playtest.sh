@@ -337,7 +337,16 @@ TAKEFOCUS
                 while [ -z "$(findwin)" ] && [ $s -lt $((to*2)) ] && alive; do sleep 0.5; s=$((s+1)); done
                 WIN=$(findwin)
                 if [ -z "$WIN" ]; then log "  no window"; continue; fi
-                geom; focuswin
+                # The game can still change the window (remove its frame,
+                # resize it) just after it appears: wait until the geometry
+                # is the same for three reads 0.5 s apart (at most 10 s), so
+                # the shots and the clicks use the final place.
+                geom; g0="$WW $WH $WX $WY"; same=0; s=0
+                while [ $same -lt 2 ] && [ $s -lt 20 ] && alive; do
+                    sleep 0.5; s=$((s+1)); geom
+                    if [ "$WW $WH $WX $WY" = "$g0" ]; then same=$((same+1)); else same=0; g0="$WW $WH $WX $WY"; fi
+                done
+                focuswin
                 xdotool mousemove $((WX+WW/2)) $((WY+WH/2))
                 T0=$(date +%s.%N)
                 log "  window $WIN ${WW}x${WH}+${WX}+${WY}" ;;
