@@ -120,9 +120,14 @@
 #                         windows-run.bat". The game counts as running while
 #                         that program or a Lithtech.exe is (the launcher
 #                         exits once it has started the engine).
-#   PLAYTEST_PREFIX=<dir> the Wine prefix (default: the container's; a
-#                         relative path is from the repository); a new
-#                         directory is a fresh prefix, no registry values
+#   PLAYTEST_PREFIX=<dir> the Wine prefix to use and keep (a relative path
+#                         is from the repository); a new directory is a
+#                         fresh prefix, no registry values. Default: a
+#                         private copy of the container's prefix
+#                         ($WINEPREFIX, without its Temp files), made in
+#                         /tmp for the run and removed after it. Thus runs
+#                         at the same time in different containers do not
+#                         interfere
 # The default keys (defctrls.cfg): WASD move, arrows turn, Space jump,
 # C duck, F / mouse 1 fire, R reload, Shift_L next weapon, 1-0 weapons,
 # E activate, F6 quicksave, F9 quickload, Escape menu.
@@ -439,6 +444,26 @@ else
 fi
 RUNNER
 
+# The Wine prefix: $PLAYTEST_PREFIX as it is, else a private copy of the
+# container's, made for this run and removed after it. Each container has
+# its own wineserver, and two wineservers on one prefix do not see the
+# open files of each other: a second game writes the DLLs that it takes
+# out of its rez files into the Temp folder over the files that the first
+# game runs from, and the first game crashes. One wineserver refuses that
+# write, as Windows does, and the second game writes to a new name.
+PRIVATE_PREFIX=
+if [ -n "${PLAYTEST_PREFIX:-}" ]; then
+    # (Wine wants it absolute: a relative one is the repository's)
+    export WINEPREFIX="$(abs "$PLAYTEST_PREFIX")"
+else
+    SRC_PREFIX="${WINEPREFIX:-$HOME/.wine}"
+    PRIVATE_PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/playtest-prefix.XXXXXX")" || exit 2
+    if [ -f "$SRC_PREFIX/system.reg" ]; then
+        cp -a "$SRC_PREFIX/." "$PRIVATE_PREFIX/" || { rm -rf "$PRIVATE_PREFIX"; exit 2; }
+        rm -rf "$PRIVATE_PREFIX"/drive_c/users/*/Temp/*
+    fi
+    export WINEPREFIX="$PRIVATE_PREFIX"
+fi
 (
 cd "$RUN" || exit 1
 if [ ! -e /dev/snd ] && [ -f /usr/share/alsa/alsa.conf ]; then
@@ -446,12 +471,6 @@ if [ ! -e /dev/snd ] && [ -f /usr/share/alsa/alsa.conf ]; then
     export ALSA_CONFIG_PATH="$RUN/asound.conf"
 fi
 export WINEDEBUG=${PLAYTEST_WINEDEBUG:--all,+seh} WINEDLLOVERRIDES=${PLAYTEST_DLLOVERRIDES-winedbg.exe=d}
-# (Wine wants it absolute: a relative one is the repository's)
-case "${PLAYTEST_PREFIX:-}" in
-    "") ;;
-    /*) export WINEPREFIX=$PLAYTEST_PREFIX ;;
-    *)  export WINEPREFIX=$REPO/$PLAYTEST_PREFIX ;;
-esac
 # the modern build lays its menus out in the centred 4:3 area (docs/MODERN.md M-G2)
 case "$(basename "$GAME")" in *modern*) DEFMAP=modern ;; *) DEFMAP=retail ;; esac
 export PLAYTEST_MAP="${PLAYTEST_MAP:-$DEFMAP}"
@@ -459,5 +478,9 @@ export PLAYTEST_MAP="${PLAYTEST_MAP:-$DEFMAP}"
 [ -n "$SCRIPT" ] && export NOLF2SRC_PADTEST=padtest.txt
 xvfb-run -a -s "-screen 0 ${SCREEN}x24" bash runner.sh $SECS
 )
+if [ -n "$PRIVATE_PREFIX" ]; then
+    wineserver -k 2>/dev/null; wineserver -w 2>/dev/null
+    rm -rf "$PRIVATE_PREFIX"
+fi
 cat "$RUN/result.txt" 2>/dev/null || echo "NO RESULT (the run failed)"
 grep -q '^ALIVE' "$RUN/result.txt" 2>/dev/null
