@@ -30,7 +30,14 @@ VC6 (cl 12.00.x under Wine) and C++.
 5. A worker keeps a form if its score is equal or better. Sometimes it
    keeps a worse form (simulated annealing, `--temperature`). Sometimes
    it goes back to the best form of all workers.
-6. It stops when a form is identical, or at `--time` or `--tries`.
+6. When the mutations make only forms that it compiled before (a small
+   function), a worker applies more mutations at a time. After
+   `--max-dups` such mutations in sequence (default 5000), the worker
+   stops.
+7. It stops when a form is identical, or at `--time` or `--tries`.
+8. If the best form is better than the original, a simplify step puts
+   back each changed group of lines (and removes each added line) that
+   the score does not need (`--no-simplify` to skip it).
 
 The permuter does not write into the repository. It writes `best.cpp`,
 `best.diff` and `log.txt` in `--out` (default: a new directory in

@@ -1478,7 +1478,12 @@ class Search:
         rng = random.Random(seed)
         cur_sc, cur = None, None
         temp = self.args.temperature
+        dups = 0
         while not self.stop.is_set():
+            if dups >= self.args.max_dups:
+                # a small function: the mutations make no new form
+                self.note(f"w{w.idx}: no new form in {dups} mutations, stops")
+                break
             with self.lock:
                 if self.args.tries and self.tries >= self.args.tries:
                     break
@@ -1488,13 +1493,15 @@ class Search:
             if cur is None or rng.random() < 0.05:
                 cur_sc, cur = bsc, bsrc
             cand, hows = cur, []
-            for _ in range(rng.choice([1, 1, 1, 2, 2, 3])):
+            # more mutations at a time when the near forms are all tried
+            for _ in range(min(8, rng.choice([1, 1, 1, 2, 2, 3]) + dups // 200)):
                 new, how = mutate(cand, self.func, rng, self.args)
                 if new is None:
                     continue
                 cand = new
                 hows.append(how)
             if cand == cur:
+                dups += 1
                 continue
             key = hashlib.sha1(re.sub(r"\s+", " ", cand).encode()).hexdigest()
             with self.lock:
@@ -1504,6 +1511,7 @@ class Search:
                 else:
                     hit = False
                     self.tries += 1
+            dups = dups + 1 if hit else 0
             if not hit:
                 obj, out = w.compile(self.func.with_source(cand))
                 if obj is None:
@@ -1524,7 +1532,8 @@ class Search:
                     self.offer(sc, cand, summary, "+".join(hows))
             if sc is None:
                 continue
-            if cur_sc is None or sc <= cur_sc or \
+            # many repeated forms: walk on whatever the score (explore)
+            if cur_sc is None or sc <= cur_sc or dups > 1000 or \
                     rng.random() < math.exp(-(sc - cur_sc) / max(temp, 1e-9)):
                 cur_sc, cur = sc, cand
 
@@ -1624,6 +1633,7 @@ def main(argv=None):
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--status", type=float, default=60)
+    ap.add_argument("--max-dups", type=int, default=5000)
     ap.add_argument("--no-simplify", action="store_true")
     ap.add_argument("--simplify-tries", type=int, default=200)
     ap.add_argument("--verbose", action="store_true")
