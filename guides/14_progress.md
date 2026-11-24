@@ -399,6 +399,35 @@ that had no address, `<from>` is `-`. `--refuted` lists the short
 functions that still have an operand that does not agree. Each one is a
 real difference, or a placement that is still wrong.
 
+**A jump table matches by the case labels that it names.** A switch
+statement can compile to a jump table after the code of the function. Each
+entry is a DIR32 relocation to a case label. The `jmp [reg*4+table]` that
+reads the table, and the `mov r8, [reg+table]` that reads its byte index
+table, are DIR32 relocations to the tables. The masked match masked these
+operands as it masks all relocations. Thus a table matched when its
+entries named other cases, or the code of a different function. Now
+`exematch` keeps each relocation that names a place in the extent of the
+function itself (a self-reference, `Mask.selfrefs`). At a hit, each such
+operand must name the same place in the function at that address:
+
+* For a DIR32, the operand must be the hit address plus the offset of the
+  place.
+* For a REL32 (a recursive call), the operand must reach the place. It can
+  also reach a `jmp rel32` thunk to the place: an incremental link calls a
+  function through its thunk (NOLF2.exe's `_Rb_tree::_M_erase` at
+  0x405020 calls itself through 0x401585).
+* In the pages that a target's `readable` fills in, the bytes are the code
+  of a different build at the shipped addresses. Thus each DIR32 operand
+  there is the address of its place in that build. All of them must be
+  different from the shipped address of the place by the same quantity.
+
+If one operand does not agree, the hit is not a hit. The function then
+goes to the near pairing, as other functions whose bytes are different do.
+This rule makes nothing identical. A table is equal when each entry names
+the matching case label, not when its raw bytes are equal. The rows of the
+byte index table are not relocations. The scorer compares them byte for
+byte, as before.
+
 **The literals that a function names** (tools 80606ba). The masked match
 masks every relocated operand. Thus functions that are different only in
 the string that they pass have one shape, and name order chose among them.
@@ -502,7 +531,13 @@ row in front of it when these two conditions are true:
 1. In the shipped code, control flow from the near row reaches the start.
    The flow must be a conditional jump, a jump table, or a fall-through
    from an instruction that is not a call. Alternatively, the start is
-   inside an instruction that this flow reaches. An unconditional jump is
+   inside an instruction that this flow reaches. Alternatively, the start
+   is inside a switch table that an instruction of this flow reads: the
+   jump table of a `jmp [reg*4+table]` (its entries, while each one points
+   into the near row), or the byte index table that a `mov r8,
+   [reg+table]` reads before that jump (its bytes, while each one is the
+   number of an entry). After the tables, the row of the start must
+   contain only padding. An unconditional jump is
    not proof, because a tail call to the next function is also one. A call
    is not proof, because a call does not always return.
 2. Our function that is placed near at that row is long enough to reach the
