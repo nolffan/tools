@@ -13,7 +13,10 @@ interior match, a shared tail and a non-start hit (progress.py's
 _resolve_overlaps); split tails merged into a near row only on proof
 (progress.py's _merge_split_tails); whole-image identity through the time stamps but not
 through a changed byte (progress.py, buildcmp.py); known and new data
-differences (datacheck.py). Not covered here, by their nature: vtabcheck.py
+differences (datacheck.py); a switch's jump table matched by the case
+labels its entries name, not by its masked bytes (exematch.py), and a
+start inside a near function's switch tables merged into it
+(_merge_split_tails). Not covered here, by their nature: vtabcheck.py
 and the region rules need a linked image and a map (tested against the
 games' builds: see tools/README.md).
 """
@@ -265,6 +268,134 @@ class SplitTails(unittest.TestCase):
         out, _s = self.merge(text, [0x1000, 0x1007], {0x1000: 7, 0x1007: 6},
                              {}, {"f": (text, set())})
         self.assertEqual(out, [0x1000, 0x1007])
+
+
+    def switch(self):
+        """A switch whose byte index table the enumeration cut: 0: the
+        code, 0x24: the jump table (cases 0x18, 0x1e), 0x2c: its byte
+        index table (6 bytes), 0x32: the next function."""
+        tva = self.TVA
+        code = bytes.fromhex("8b442404" "83f805" "7715" "33c9" "8a88") + \
+            struct.pack("<I", tva + 0x2C) + bytes.fromhex("ff248d") + \
+            struct.pack("<I", tva + 0x24) + \
+            bytes.fromhex("b801000000c3" "33c0c3" "909090") + \
+            struct.pack("<II", tva + 0x18, tva + 0x1E) + \
+            bytes.fromhex("000101000100")
+        return code, code + bytes.fromhex("33c0c3")
+
+    def test_inside_the_switch_tables_is_a_tail(self):
+        code, text = self.switch()
+        out, sizes = self.merge(text, [0x1000, 0x102f, 0x1032],
+                                {0x1000: 0x2f, 0x102f: 3, 0x1032: 3},
+                                {0x1000: "f"}, {"f": (code, set())})
+        self.assertEqual(out, [0x1000, 0x1032])
+        self.assertEqual(sizes[0x1000], 0x32)
+        self.assertEqual(progress.SPLIT_TAILS[-1][4], "table")
+
+    def test_a_row_past_the_switch_tables_keeps_the_tail(self):
+        # the row runs on into the next function: not only the tables
+        code, text = self.switch()
+        out, _s = self.merge(text, [0x1000, 0x102f],
+                             {0x1000: 0x2f, 0x102f: 6},
+                             {0x1000: "f"}, {"f": (code, set())})
+        self.assertEqual(out, [0x1000, 0x102f])
+
+
+class JumpTables(unittest.TestCase):
+    """exematch's self-references: a switch's jump table matches where
+    each entry names the matching case label of the function at that
+    address, not by its masked bytes."""
+    BASE = 0x401000
+
+    def obj(self):
+        # 0: mov eax,[esp+4]; cmp eax,1; ja 0x16; jmp [eax*4+$Ltab]
+        # 0x10: case 0: mov eax,1; ret   0x16: case 1: xor eax,eax; ret
+        # 0x1c: $Ltab: dd $L0, $L1
+        code = bytes.fromhex("8b442404" "83f801" "770d" "ff2485") + \
+            b"\0" * 4 + bytes.fromhex("b801000000c3" "33c0c3" "909090") + \
+            b"\0" * 8
+        syms = [(b"_f", 0, 0x20, 2), (b"$Ltab", 0x1C, 0, 6),
+                (b"$L0", 0x10, 0, 6), (b"$L1", 0x16, 0, 6)]
+        relocs = [(0x0C, 1), (0x1C, 2), (0x20, 3)]
+        sym_p = 20 + 40 + len(code) + 10 * len(relocs)
+        out = bytearray(struct.pack("<HHIIIHH", 0x14C, 1, 0, sym_p, len(syms),
+                                    0, 0))
+        out += struct.pack("<8sIIIIIIHHI", b".text", 0, 0, len(code), 60,
+                           60 + len(code), 0, len(relocs), 0, 0x60000020)
+        out += code
+        for off, sym in relocs:
+            out += struct.pack("<IIH", off, sym, DIR32)
+        for name, val, typ, st in syms:
+            out += struct.pack("<8sIhHBB", name, val, 1, typ, st, 0)
+        out += struct.pack("<I", 4)
+        from exematch import parse_obj_masked
+        return parse_obj_masked(bytes(out))["_f"]
+
+    def linked(self, at, tab, cases):
+        code = bytearray(bytes.fromhex("8b442404" "83f801" "770d" "ff2485") +
+                         struct.pack("<I", tab) +
+                         bytes.fromhex("b801000000c3" "33c0c3" "909090") +
+                         struct.pack("<II", *cases))
+        return bytes(code)
+
+    def hits(self, text):
+        from exematch import find
+        code, mask = self.obj()
+        return list(find(text, self.BASE, code, mask))
+
+    def test_self_references(self):
+        _code, mask = self.obj()
+        self.assertEqual(mask.selfrefs, {0x0C: (True, 0x1C),
+                                         0x1C: (True, 0x10),
+                                         0x20: (True, 0x16)})
+
+    def test_another_builds_copy_is_off_by_one_amount(self):
+        # a target's `readable` pages: another build's bytes copied to the
+        # shipped address; its table names its cases at that build's
+        # address, all of them 0x30 lower
+        b = self.BASE
+        text = self.linked(b, b - 0x30 + 0x1C, (b - 0x30 + 0x10,
+                                                b - 0x30 + 0x16))
+        from exematch import find
+        code, mask = self.obj()
+        self.assertEqual(self.hits(text), [])
+        self.assertEqual(list(find(text, b, code, mask, lambda a: True)), [b])
+        text = self.linked(b, b - 0x30 + 0x1C, (b - 0x30 + 0x16,
+                                                b - 0x30 + 0x10))
+        self.assertEqual(list(find(text, b, code, mask, lambda a: True)), [])
+
+    def test_recursive_call_through_a_thunk(self):
+        # an incremental link's recursive call: to the function's own
+        # `jmp rel32` thunk, which is the same place; to another, it is not
+        from exematch import Mask, find
+        b = self.BASE
+        # 0: a thunk, jmp 0x10 | 0x10: f: call f; xor eax,eax; ret ...
+        code = bytes.fromhex("e8fbffffff") + bytes.fromhex("33c0c3d9c0d9c0d9c0c3")
+        mask = Mask(range(1, 5), {1: (False, 0)})
+        thunk = bytes.fromhex("e90b000000") + b"\xcc" * 11      # jmp +0x0b -> 0x10
+        direct = bytes.fromhex("e8fbffffff") + code[5:]
+        via = bytes.fromhex("e8ebffffff") + code[5:]           # call 0x0
+        self.assertEqual(list(find(thunk + direct, b, code, mask)), [b + 0x10])
+        self.assertEqual(list(find(thunk + via, b, code, mask)), [b + 0x10])
+        other = bytes.fromhex("e90b010000") + b"\xcc" * 11      # elsewhere
+        self.assertEqual(list(find(other + via, b, code, mask)), [])
+
+    def test_entries_naming_its_cases_match(self):
+        b = self.BASE
+        text = self.linked(b, b + 0x1C, (b + 0x10, b + 0x16))
+        self.assertEqual(self.hits(text), [b])
+
+    def test_entries_naming_other_cases_do_not(self):
+        b = self.BASE
+        text = self.linked(b, b + 0x1C, (b + 0x16, b + 0x10))
+        self.assertEqual(self.hits(text), [])
+
+    def test_a_copy_naming_another_function_does_not(self):
+        # the same bytes at 0x40, so its table names the first copy's cases
+        b = self.BASE
+        one = self.linked(b, b + 0x1C, (b + 0x10, b + 0x16))
+        text = one.ljust(0x40, b"\xcc") + one
+        self.assertEqual(self.hits(text), [b])
 
 
 class WholeImage(unittest.TestCase):

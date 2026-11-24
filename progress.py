@@ -151,7 +151,8 @@ SMALL_REFUTED = []
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from objdiff import parse_obj  # noqa: E402
 from libextract import extract  # noqa: E402
-from exematch import parse_obj_masked, find  # noqa: E402
+from exematch import parse_obj_masked, find, Mask, selfrefs_hold  # noqa: E402
+from exematch import find as _exematch_find  # noqa: E402
 from exedump import Pe  # noqa: E402
 from enumfuncs import Image as EnumImage, enumerate_functions  # noqa: E402
 import x86len as _x86  # noqa: E402
@@ -690,7 +691,10 @@ def _load_objs(objs, icl=False, graphs=None):
                 code, mask = v
                 body = strip_pad(code)
                 if body != code:
-                    unpadded[key] = (body, {i for i in mask if i < len(body)})
+                    unpadded[key] = (body, Mask(
+                        (i for i in mask if i < len(body)),
+                        {o: r for o, r in mask.selfrefs.items()
+                         if o + 4 <= len(body)}))
             funcs[key] = v
             kinds[key] = rk.get(k, {})
             RELOC_TARGETS[key] = rt.get(k, {})
@@ -1127,7 +1131,7 @@ def _resolve_overlaps(label, matched, placed, start_set, funcs, all_hits,
               f"a better one", file=sys.stderr)
 
 
-def _flow(text, tva, p, t, bound):
+def _flow(text, tva, p, t, bound, tables=None):
     """How the code at shipped address p reaches t, staying in [p, bound):
     ({address: kinds}, {address: length}) of the instructions control flow
     reaches from p. A kind is how an instruction was reached: "jcc" (a
@@ -1136,12 +1140,20 @@ def _flow(text, tva, p, t, bound):
     instruction that is not a call, a nop or an int3), "fallcall" (it
     follows one of those) or "jmp" (an unconditional jump's target, only
     followed below t: one to t or past it may be a tail call to another
-    function)."""
+    function).
+
+    With `tables`, a list, each switch table the reached code indexes is
+    appended to it as (start, end): the jump table of an indirect `jmp
+    [reg*4+table]` (its entries while each names a place in [p, bound)),
+    and the byte index table that a `mov r8, [reg+table]` (or `movzx`)
+    reads just before that jump in the same run of code (its bytes from
+    there while each is the number of an entry of that jump table)."""
     reach, insn = {}, {}
     work = [(p, "entry")]
     end = tva + len(text)
     while work:
         a, how = work.pop()
+        index = None        # a byte index table this run of code read
         while p <= a < bound:
             reach.setdefault(a, set()).add(how)
             if a in insn:
@@ -1166,16 +1178,28 @@ def _flow(text, tva, p, t, bound):
             elif 0x0F80 <= op <= 0x0F8F:
                 work.append((nxt + struct.unpack_from("<i", text,
                                                       ins.imm_off)[0], "jcc"))
+            if op in (0x8A, 0x0FB6) and ins.mod == 2 and ins.rm != 4 and \
+                    ins.disp_len == 4:
+                index = struct.unpack_from("<I", text, ins.disp_off)[0]
             if op == 0xFF and ins.reg in (4, 5):
                 if ins.reg == 4 and ins.mod == 0 and ins.rm == 4 and \
                         ins.disp_len == 4:
-                    k = struct.unpack_from("<I", text, ins.disp_off)[0]
+                    k0 = k = struct.unpack_from("<I", text, ins.disp_off)[0]
                     while tva <= k <= end - 4:
                         e = struct.unpack_from("<I", text, k - tva)[0]
                         if not p <= e < bound:
                             break
                         work.append((e, "switch"))
                         k += 4
+                    if tables is not None and k > k0:
+                        tables.append((k0, k))
+                        if index is not None and p <= index:
+                            i = index
+                            while tva <= i < end and \
+                                    text[i - tva] < (k - k0) // 4:
+                                i += 1
+                            if i > index:
+                                tables.append((index, i))
                 break
             call = op == 0xE8 or (op == 0xFF and ins.reg in (2, 3)) or \
                 op in (0x90, 0xCC)
@@ -1190,9 +1214,9 @@ def _merge_split_tails(tgt, label, text, tva, starts, sizes, matched, paired,
                        small, funcs, icl):
     """SPLIT TAILS. The enumeration takes for a function start what is only
     a place inside one: a switch's case label (its jump table points at
-    it), a block a byte that reads as `call rel32` or `push imm32` happens
-    to name, a byte in the middle of an instruction. Such a start cuts its
-    function in two rows. Where we have the function and it is identical,
+    it), a byte of the switch's tables themselves, a block a byte that
+    reads as `call rel32` or `push imm32` happens to name, a byte in the
+    middle of an instruction. Such a start cuts its function in two rows. Where we have the function and it is identical,
     the second row is inside the matched bytes and drops out (`inside`);
     where it is near, the second row stayed unwritten, though our function
     covers it, and it changed between todo and absorbed from one build to
@@ -1203,7 +1227,10 @@ def _merge_split_tails(tgt, label, text, tva, starts, sizes, matched, paired,
       the shipped code: control flow from p reaches t by a conditional
       jump, a jump table, or by falling through from an instruction that
       is not a call (a call may not return), or t is inside an
-      instruction that flow from p reaches. An unconditional jump to t
+      instruction that flow from p reaches, or t is inside a switch
+      table that code flow from p reaches indexes (its jump table, or the
+      byte index table read for that jump: _flow) and t's row has
+      nothing after the tables but padding. An unconditional jump to t
       proves nothing (a tail call to the next function is one).
 
       ours: the function of ours placed near at p is long enough to reach
@@ -1238,7 +1265,8 @@ def _merge_split_tails(tgt, label, text, tva, starts, sizes, matched, paired,
                     not sizes.get(t):
                 break
             bound = t + sizes[t]
-            reach, insn = _flow(text, tva, p, t, bound)
+            tables = []
+            reach, insn = _flow(text, tva, p, t, bound, tables)
             how = None
             kinds = reach.get(t, set()) if t in insn else set()
             for k in ("jcc", "switch", "fall"):
@@ -1248,6 +1276,21 @@ def _merge_split_tails(tgt, label, text, tva, starts, sizes, matched, paired,
             if how is None and t not in insn:
                 if any(b < t < b + m for b, m in insn.items()):
                     how = "mid"
+            if how is None and t not in insn:
+                # inside a switch table the code from p indexes, up to
+                # its end, and nothing after it but padding: p's data
+                spans = []          # the tables, adjacent ones joined
+                for lo, hi in sorted(tables):
+                    if spans and lo <= spans[-1][1]:
+                        spans[-1][1] = max(spans[-1][1], hi)
+                    else:
+                        spans.append([lo, hi])
+                for lo, hi in spans:
+                    if lo <= t < hi and all(
+                            c in (0x90, 0xCC)
+                            for c in text[hi - tva:bound - tva]):
+                        how = "table"
+                        break
             if how is None:
                 break
             drop.add(t)
@@ -1991,6 +2034,17 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         os.path.exists(os.path.join(REPO, tgt["readable"]))
     if readable:
         p = os.path.join(REPO, tgt["readable"])
+    # The pages `readable` fills in are another build's code, copied to
+    # the shipped addresses: an absolute operand in them that names a
+    # place of its own function (a jump table's entry) is that build's
+    # address, so there the function's self-references hold when all of
+    # them are off by one amount (exematch.selfrefs_hold). Everywhere else
+    # they hold exactly.
+    def rebased(a, _r=readable):
+        return _r and region(tgt, a) == "encrypted"
+
+    def find(text, tva, code, mask, _find=_exematch_find):
+        return _find(text, tva, code, mask, rebased)
     pe = Pe(p)
     tva, tvs, trp = pe.secs[".text"]
     text = _restore_iat_calls(tgt, pe.d[trp : trp + tvs], tva)
@@ -2081,7 +2135,8 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         for c, m in [(code, mask)] + ([unpadded[n]] if n in unpadded else []):
             if a in matched or off < 0 or off + len(c) > len(text):
                 continue
-            if all(i in m or text[off + i] == c[i] for i in range(len(c))):
+            if all(i in m or text[off + i] == c[i] for i in range(len(c))) \
+                    and selfrefs_hold(text, tva, off, m, None, rebased(a)):
                 matched[a] = len(c)
                 PLACED_SYMS[(label, a)] = n
                 placed.add(n)
@@ -2360,7 +2415,8 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             if sizes.get(a) != end:            # same length, exactly
                 continue
             off = a - tva
-            if all(i in mask or text[off + i] == code[i] for i in range(end)):
+            if all(i in mask or text[off + i] == code[i] for i in range(end)) \
+                    and selfrefs_hold(text, tva, off, mask, end, rebased(a)):
                 small.add(a)
                 placed_small.add(n)
                 SMALL_SYMS[(label, a)] = n
@@ -2385,7 +2441,9 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
                 if len(body) != end:
                     continue
                 if all(i in mask or text[off + i] == code[i]
-                       for i in range(end)):
+                       for i in range(end)) and \
+                        selfrefs_hold(text, tva, off, mask, end,
+                                      rebased(a)):
                     small.add(a)
                     placed_small.add(n)
                     SMALL_SYMS[(label, a)] = n
@@ -2990,7 +3048,8 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
             elif sizes.get(a) != end:
                 return False
             return all(i in mask or text[a - tva + i] == code[i]
-                       for i in range(end))
+                       for i in range(end)) and \
+                selfrefs_hold(text, tva, a - tva, mask, end, rebased(a))
 
         def refill(a):
             """An address a verified function moved away from: given, by
