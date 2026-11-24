@@ -1581,9 +1581,9 @@ class Search:
             better = self.best[0] is None or sc < self.best[0]
             if better:
                 self.best = (sc, src, summary)
+                write_best(self.args, self.func, src)
         if better:
             self.note(f"best {sc}: {summary}  ({how})")
-            write_best(self.args, self.func, src)
             if sc == 0:
                 self.stop.set()
 
