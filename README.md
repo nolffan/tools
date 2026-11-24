@@ -205,6 +205,7 @@ match means identical up to addresses.
 | `nearpos.py` | Slides each unmatched function of an object over `.text` and reports where the fewest unmasked bytes differ. Reach for it first. |
 | `layoutscan.py` | Finds nears whose every difference is a field displacement shifted by one constant: a struct layout error. `--image=<target>`. |
 | `nearscan.py` | Runs `fndiff` over a whole near list and classifies each. `nearscan.py <target>`. |
+| `permuter.py` | Tries many equivalent forms of one function's source (swapped statements, moved declarations, temporaries, commuted operands, other loop and `if` forms, casts) and keeps the form whose code is nearest to retail: for nears in register allocation, instruction order or stack layout. It compiles one object for each try, in build containers that mount the repository read-only, and writes a diff that you apply by hand. `permuter.py --repo <repo> --obj <obj> --symbol <mangled> --addr <0xVA> --image <target>`. See `guides/22_permuter.md`. |
 | `o2gap.py` | Functions identical in `server.dll` (/O1) but not in `Lithtech.exe` (/O2): their source is proven, so what is missing is the shape /O2 sees. |
 | `callseq.py` | Does our function call what the shipped one calls, in order? `--count` gives a shipped range's call count. |
 | `census.py` | Compares the instruction census of a shipped function and ours. |
