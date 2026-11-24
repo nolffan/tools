@@ -49,9 +49,10 @@ Usage:
                each changed group of lines that the score does not need.)
 
 The score is 0 for code that is byte-identical (relocations masked, the
-rule of fndiff.py). Otherwise it is 4 x (the mnemonic diff after the best
-renaming of ebx/esi/edi) + 2 x (the mnemonic diff without renaming) + the
-number of aligned instructions whose bytes differ + 1. Lower is better.
+rule of fndiff.py). Otherwise it is 8 x (the mnemonic diff after the best
+renaming of ebx/esi/edi) + (the mnemonic diff without renaming) + (the
+number of aligned instructions whose bytes differ) + 2 x (the difference
+in size, in bytes) + 1. Lower is better.
 
 Output: <out>/best.cpp, <out>/best.diff (a unified diff of the source
 against the original, with the path of the source in the tree), and
@@ -1229,7 +1230,7 @@ def score(ship, obj, sym):
         for i, j in zip(range(i1, i2), range(j1, j2)):
             if not same_bytes(ship[i][1], ours[j][1], offs[j]):
                 bad += 1
-    sc = 4 * ren + 2 * raw + bad + 1
+    sc = 8 * ren + raw + bad + 2 * abs(ship_len - ours_len) + 1
     return sc, (f"ship {ship_len}/ours {ours_len} bytes, mnemonic diff {raw}, "
                 f"after renaming {ren}, byte diffs {bad}")
 
@@ -1674,6 +1675,8 @@ def main(argv=None):
 
     atexit.register(cleanup_containers)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+    # also when started in the background, where a shell ignores SIGINT
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     print(f"permuter: {args.func} in {args.source_rel}, {len(ship)} retail instructions, "
           f"{args.workers} worker(s), scratch {base}", flush=True)
     make_prefix(args, cmd, base)

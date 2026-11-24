@@ -48,14 +48,17 @@ The permuter does not write into the repository. It writes `best.cpp`,
 The score uses the comparison of `fndiff.py`:
 
 - 0: byte-identical, with the relocations masked.
-- Otherwise: 4 × (the mnemonic diff after the best renaming of ebx, esi
-  and edi) + 2 × (the mnemonic diff without renaming) + (the number of
-  aligned instructions whose bytes differ) + 1.
+- Otherwise: 8 × (the mnemonic diff after the best renaming of ebx, esi
+  and edi) + (the mnemonic diff without renaming) + (the number of
+  aligned instructions whose bytes differ) + 2 × (the difference in
+  size, in bytes) + 1.
 
 Thus a structure difference costs most, then a register difference, then
-a displacement or a constant. A stack layout difference (only the frame
-offsets differ) has a mnemonic diff of 0 and a score of (the number of
-instructions with a different offset) + 1.
+a displacement or a constant. A pure register near (the diff is 0 after
+renaming) scores lower than a form with a different structure, also if
+the register diff of that form is smaller. A stack layout difference
+(only the frame offsets differ) has a mnemonic diff of 0 and a score of
+(the number of instructions with a different offset) + 1.
 
 ## 3. The mutations
 
@@ -106,7 +109,12 @@ ext/tools/permuter.py --repo ~/src/tron20src \
 - `--verbose` writes each try to the log. `--keep` keeps the scratch
   directory (the Wine prefixes of the workers).
 
-Each compile of one object takes 1 to 3 seconds. Each worker uses one
+To stop a run, send SIGINT (Ctrl-C) or SIGTERM. The permuter then
+removes its containers (`permuter-<pid>-<n>`) and writes the best form
+that it found. If it is killed (SIGKILL), remove its containers with
+`docker rm -f`.
+
+Each compile of one object takes 1 to 6 seconds (Tron 2.0, with the precompiled header). Each worker uses one
 processor. The first compile is the original form; the permuter stops if
 it does not compile.
 
