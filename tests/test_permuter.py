@@ -173,6 +173,15 @@ class Mutations(unittest.TestCase):
         self.assertTrue(any("float fMax = 1.0f, fSum = 0.0f;" in r for r in outs))
         self.assertTrue(any("float fSum = 0.0f;\n\tfloat fMax = 1.0f;" in r for r in outs))
 
+    def test_hoist(self):
+        self.assertEqual(self.f.param_types, ["const int*", "int"])
+        text = "void CA::F(HOBJECT hUser)\n{\n\tg_pMgr->Process(m_s.c_str(), m_hObject, hUser);\n}\n"
+        f = permuter.Func(text, "CA::F")
+        rng = random.Random(1)
+        outs = {permuter.m_hoist(permuter.View(f.source(), f), rng, OPTS) for _ in range(40)}
+        self.assertIn("CA::F(HOBJECT hUser)\n{\n\tHOBJECT permTmp0 = m_hObject;\n"
+                      "\tg_pMgr->Process(m_s.c_str(), permTmp0, hUser);\n}", outs)
+
     def test_split_expr(self):
         outs = self.apply(permuter.m_split_expr)
         self.assertIn(self.src.replace("m_nCount = n * 2;", "m_nCount = n;\n\tm_nCount *= 2;"), outs)

@@ -41,6 +41,9 @@ Usage:
                permitted).
   --strict     do not swap two statements that both call a function (the
                order of their side effects can change).
+  --types      more types for new temporaries, separated by commas
+               ("HOBJECT,const WEAPON*"). The permuter also takes the
+               types of the parameters, the locals and the return value.
   --loose      also commute the operands of && and ||.
                Only an identical result is a proof of equivalence.
   --keep       do not delete the scratch directory.
@@ -358,12 +361,44 @@ class Func:
         if self.ret == "void":
             self.ret = None
         self.name = name
+        # the parameter types (for temporaries): the tokens before each
+        # parameter's name, without a reference's '&'
+        self.param_types = []
+        self.param_names = []
+        k, start = lp + 1, lp + 1
+        while k <= rp:
+            x = ftoks[k].text
+            if x in OPEN and k != lp:
+                k = match_close(ftoks, k)
+            elif x == "," or k == rp:
+                part = [t.text for t in ftoks[start:k]]
+                if "=" in part:
+                    part = part[:part.index("=")]
+                if len(part) >= 2 and ftoks[k - 1].kind == "id" and part != ["void"]:
+                    ty = [t for t in part[:-1] if t != "&"]
+                    if ty:
+                        self.param_types.append(_join_type(ty))
+                        self.param_names.append(part[-1])
+                start = k + 1
+            k += 1
+        self.extra_types = []
 
     def source(self):
         return self.text[self.hs:self.be]
 
     def with_source(self, src):
         return self.text[:self.hs] + src + self.text[self.be:]
+
+
+def _join_type(words):
+    """A type from its tokens: `const LTVector *` -> `const LTVector*`."""
+    out = ""
+    for w in words:
+        if w in ("*", "&", "::", "<", ">", ",") or out.endswith(("::", "<")):
+            out += w
+        else:
+            out += (" " if out else "") + w
+    return out
 
 
 class View:
@@ -1148,11 +1183,88 @@ def m_decl_order(v, rng, opts):
     return v.replace([(s.a, s.b, f"\n{ind}".join(f"{base} {p};" for p in parts))])
 
 
+def m_hoist(v, rng, opts):
+    """Put a call argument, or an operand with a member access or a call,
+    into a new local before its statement: `f(a->b)` -> `T t = a->b;
+    f(t)`. T is one of the types that the function names (its parameters,
+    its locals, its return type, --types): a wrong type does not compile,
+    or does not give the retail code."""
+    types = set(v.func.param_types) | set(v.func.extra_types)
+    if v.func.ret:
+        types.add(v.func.ret)
+    for s in walk([v.body]):
+        d = decl_info(v, s)
+        if d:
+            base = d[0] - 1
+            while v.toks[base].text in ("*", "&"):
+                base -= 1
+            ty = [t.text for t in v.toks[s.a:base + 1] if t.text != "static"]
+            stars = "".join(t.text for t in v.toks[base + 1:d[0]] if t.text == "*")
+            types.add(_join_type(ty) + stars)
+    types.discard("")
+    if not types:
+        return None
+    local_names = set(v.func.param_names)
+    for s in walk([v.body]):
+        d = decl_info(v, s)
+        if d:
+            local_names.update(d[1])
+    cands = []
+    for blk in blocks([v.body]):
+        for st in blk.body:
+            if st.kind == "simple":
+                lo, hi = st.a, st.b - 1
+            elif st.kind in ("if", "switch"):
+                lo, hi = st.cond[0] + 1, st.cond[1] - 1
+            else:
+                continue
+            k = lo
+            while k <= hi:
+                t = v.toks[k]
+                # the arguments of a call
+                if t.text == "(" and k > lo and v.toks[k - 1].kind == "id" and \
+                        v.toks[k - 1].text not in KEYWORDS:
+                    rp = match_close(v.toks, k)
+                    j, start = k + 1, k + 1
+                    while j <= rp:
+                        x = v.toks[j].text
+                        if x in OPEN:
+                            j = match_close(v.toks, j)
+                        elif x == "," or j == rp:
+                            if j > start and not (j - start == 1 and v.toks[start].kind in ("num", "str")):
+                                cands.append((st, start, j - 1))
+                            start = j + 1
+                        j += 1
+                # an operand with -> . or a call
+                if t.text in PREC and is_binary(v, k):
+                    la = left_operand(v, k, lo)
+                    rb = right_operand(v, k, hi)
+                    if la is not None and la < k and is_primary(v, la, k - 1) and \
+                            any(v.toks[m].text in ("->", ".", "(") for m in range(la, k)):
+                        cands.append((st, la, k - 1))
+                    if rb is not None and is_primary(v, k + 1, rb) and \
+                            any(v.toks[m].text in ("->", ".", "(") for m in range(k + 1, rb + 1)):
+                        cands.append((st, k + 1, rb))
+                k += 1
+    if not cands:
+        return None
+    st, a, b = rng.choice(cands)
+    if b - a == 0 and (v.toks[a].text in local_names or v.toks[a].text in KEYWORDS):
+        return None    # already a local
+    n = 0
+    while f"permTmp{n}" in v.src:
+        n += 1
+    ind = v.line_indent(st.a)
+    ty = rng.choice(sorted(types))
+    return v.replace([(st.a, st.a - 1, f"{ty} permTmp{n} = {v.text(a, b)};\n{ind}"),
+                      (a, b, f"permTmp{n}")])
+
+
 MUTATIONS = [
     (m_swap, 4), (m_decl_split, 1), (m_decl_merge, 1), (m_decl_move, 2),
     (m_return_temp, 1), (m_temp_inline, 1), (m_split_expr, 1),
     (m_commute, 3), (m_incdec, 1), (m_not, 2), (m_loop, 1), (m_if, 2),
-    (m_cast, 1), (m_decl_order, 1),
+    (m_cast, 1), (m_decl_order, 1), (m_hoist, 2),
 ]
 
 
@@ -1630,6 +1742,7 @@ def main(argv=None):
     ap.add_argument("--out")
     ap.add_argument("--docker-image")
     ap.add_argument("--mount", action="append", default=[])
+    ap.add_argument("--types", default="")
     ap.add_argument("--loose", action="store_true")
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--keep", action="store_true")
@@ -1666,6 +1779,7 @@ def main(argv=None):
     with open(host_src, newline="") as f:
         orig = f.read()
     func = Func(orig, args.func, args.line)
+    func.extra_types = [t.strip() for t in args.types.split(",") if t.strip()]
 
     ship = retail_listing(args)
     base = os.path.join(args.out, "scratch")

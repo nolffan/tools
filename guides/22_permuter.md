@@ -77,6 +77,7 @@ the register diff of that form is smaller. A stack layout difference
 | `loop` | `for` to `while` (not when the body has `continue`), and `while` to `for`. |
 | `if` | `if (c) A else B` to `if (!(c)) B else A`; remove the `else` after a branch that returns; put the rest of the block in an `else`; early return in a `void` function, and the reverse. |
 | `cast` | Remove a C-style cast, or add one. |
+| `hoist` | Put a call argument, a member or an operand with `->`, `.` or a call into a new local before its statement. The type is one of the types of the parameters, the locals, the return value and `--types`. A wrong type does not compile, or does not give the retail code. |
 | `decl_order` | `int a, b;` to `int b, a;` or to `int a; int b;`; change the order of a constructor's member initializers. |
 
 A mutation that does not compile costs one compile and is then ignored.
@@ -102,6 +103,7 @@ ext/tools/permuter.py --repo ~/src/tron20src \
   symbol; `--line N` if the name has overloads.
 - `--target-obj <obj>` compares with a function in another object, not
   with retail (the test uses it).
+- `--types "HOBJECT,const WEAPON*"` gives more types for `hoist`.
 - `--seed N` makes a run repeatable (with one worker).
 - `--docker-image` (default `<repository name>-build`), `--root` (the
   in-container directory of the command's `cd`; default from its
