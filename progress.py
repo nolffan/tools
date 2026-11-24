@@ -1558,12 +1558,33 @@ def _verify_literals(tgt, label, matched, placed, funcs, from_lib, rkinds,
         not say which of the two h is. (ServerButeMgr's
         GetSecurityCameraInt and GetSecurityCameraFloat both pass
         "SecurityCamera"; the call they make tells them apart, and the
-        shape pass reads that.)"""
+        shape pass reads that.)
+
+        A rival from another object does not contest h when n's object
+        lies strictly nearer to h than the rival's: objects are linked
+        whole, so h is the copy beside n's own anchored functions. (The
+        global initializer of one interface holder, the same 61 bytes in
+        three objects of server.dll, 0x1002ddab, 0x10031c98 and
+        0x1004648d, each beside its object's other initializers.) Two
+        functions of one object are as near as each other: the
+        literals still do not say."""
         offs = {off for off, _b in our_lits[n]}
-        return any(m != n and m not in at and m not in placed and
-                   bare[m] != bare[n] and bare[m] not in held_now and
-                   offs <= {off for off, _b in our_lits[m]} and
-                   verdict(m, h)[0] == "ok" for m in by_hit.get(h, ()))
+        rivals = [m for m in by_hit.get(h, ())
+                  if m != n and m not in at and m not in placed and
+                  bare[m] != bare[n] and bare[m] not in held_now and
+                  offs <= {off for off, _b in our_lits[m]} and
+                  verdict(m, h)[0] == "ok"]
+        if not rivals:
+            return False
+
+        def dist(k):
+            anc = list(anchors_of(k))
+            return min(abs(h - a) for a in anc) if anc else None
+        dn = dist(n)
+        if dn is None:
+            return True
+        return any(dist(m) is None or dist(m) <= dn or
+                   _lib_of(m) == _lib_of(n) for m in rivals)
 
     for _round in range(16):
         moved = False
