@@ -148,3 +148,51 @@ hand.
   time, each of which makes the score worse, is hard to find. Use more
   time, more workers or another `--seed`.
 - Macros are tokens like other names. The permuter does not expand them.
+
+## 6. Examples (Tron 2.0, 2026-11-24)
+
+Eleven nears of Tron 2.0 that agents classed as register or schedule
+only. Each run had 2 to 4 workers for 7 to 15 minutes. Three became
+identical. A check compiled each found form again, outside the
+permuter, and `fndiff.py` gave "byte-identical" for each.
+
+`CCharacter::ShouldGib` (Object 0x10091370): retail tests the two halves
+of a 64-bit flag word one at a time. The `not` and `commute` mutations
+found it in 134 compiles:
+
+```
+-	if( !( nGibFlags & m_nDamageFlags ) )
++	if( (0 == ( nGibFlags & m_nDamageFlags )) )
+```
+
+`AINodeExitLevelByRezOut::ProcessOnUseCmd` (Object 0x1026ea10): retail
+reads `m_hObject` before the string. `hoist` found it in 3 compiles:
+
+```
+-		g_pCmdMgr->Process( m_sOnUseCmd.c_str( ), m_hObject, hUser );
++		HOBJECT permTmp0 = m_hObject;
++		g_pCmdMgr->Process( m_sOnUseCmd.c_str( ), permTmp0, hUser );
+```
+
+`CAIGoalDash::Save` (Object 0x1020bf10): the members are `double`, and
+the explicit cast moved the conversion before the vtable read. `cast`
+removed both casts (59 compiles; `--types "LTFLOAT,float"`):
+
+```
+-	SAVE_FLOAT( (LTFLOAT)m_fDashMinDist );
+-	SAVE_FLOAT( (LTFLOAT)m_fDashMaxDist );
++	SAVE_FLOAT( m_fDashMinDist );
++	SAVE_FLOAT( m_fDashMaxDist );
+```
+
+The permuter did not find a form for these: `TronTurret::GetTurnAmount`
+(the frame is 0x18 bytes bigger in retail), `TronTurret::Fire` (x87
+scheduling), `CLightCycleButeMgr::GetColorShade` (eax against ecx),
+`CHUDEnergyTransfer::BuildFill` (fsubr against fadd),
+`CInterfaceResMgr::GetFontForHeight` and
+`CTronPlayerMgr::TronUnknownLightCycleSpectate` (esi against edi in all
+of the function), `CTexturedFrame::SetRect` and the `CClusterDisc`
+constructor (the order of the stores). The mutations of SetRect and of
+the constructor make fewer than 40 forms. The cause of these nears is
+probably outside the body of the function, or in an expression that the
+mutations do not make.
