@@ -134,6 +134,9 @@ which compiler revision built which binary.
 21. **[21-directinput](21_directinput.md)** -- DirectInput: the same for the
     keyboard, the mouse and controllers. Object names are display text, not
     identifiers.
+22. **[22-permuter](22_permuter.md)** -- `permuter.py`: a machine search
+    for the source form of a near in register allocation, instruction
+    order or stack layout. Only an identical result is a proof.
 
 ## Picking a target
 
