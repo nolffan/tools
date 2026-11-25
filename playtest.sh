@@ -52,7 +52,8 @@
 #                         run is judged NO HUD, a failure
 #   shot <name>           screenshot the game window -> shots/NN-<name>.png
 #   screen <name>         screenshot the whole display (the window on it)
-#   focus                 re-focus the game window
+#   focus                 re-focus the game window, and read its size and
+#                         place again (after a change of mode or window)
 #   blur / wmfocus        alt-tab away (the focus to an xlogo) / back (as a
 #                         window manager gives it back: WM_TAKE_FOCUS, which
 #                         Wine waits for; works without PLAYTEST_WM)
@@ -378,7 +379,7 @@ TAKEFOCUS
                 else NOHUD="line $LINE"; log "  skipcine: no HUD after $(( $(date +%s) - st ))s"; fi ;;
             shot)  N=$((N+1)); f=$(printf 'shots/%02d-%s.png' $N "$1"); grab "$f"; log "  -> $f" ;;
             screen) N=$((N+1)); f=$(printf 'shots/%02d-%s.png' $N "$1"); xwd -root -silent | convert xwd:- "$f"; log "  -> $f (the display)" ;;
-            focus) focuswin ;;
+            focus) geom; focuswin ;;
             blur)  # alt-tab away: the focus to another X client (an xlogo)
                    if [ -z "${BLURWIN:-}" ]; then
                        xlogo -geometry 64x64+0+0 > /dev/null 2>&1 &
