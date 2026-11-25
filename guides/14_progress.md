@@ -514,6 +514,105 @@ linker keeps one copy. Thus:
   2.0's ClientFx.fxd paired a `CPlayRandomSoundFX::Term` that our link did
   not have, at the address of another class).
 
+**A function that our link does not have pairs last.** Our link can
+leave out a function of an object that it links. `/OPT:REF` removes it
+when nothing of ours calls it yet, or another object supplies the COMDAT.
+Such a function has no address in our image. Thus no reference, no
+position and no relocation can confirm where it ships. Only its bytes
+can. Before this rule, it paired by content in the same pass as the
+functions of our link. Thus it took addresses that the functions of our
+link get by reference or by position, and those functions stayed
+unplaced. On Tron 2.0's Object.lto:
+
+* `CLightCycleGameData::Load` (1,165 bytes, not in our link) paired with
+  0x10039c30. `CDisc::HandleDeadlyDeflect` (937 bytes) is there by
+  position, and it was unplaced.
+* CircuitButeMgr.obj's `vector<CircuitWave>` copy constructor (not in our
+  link) paired with 0x1012a4c0. `CSubroutineDataMgr::GetNameId` is
+  there by position, and it was unplaced.
+
+Now such a function pairs after the join, by content, and only with an
+address that nothing of our link took. It does not pair when another copy
+of the same function is placed.
+
+**Long look-alikes: the relocations choose.** Some long functions have
+the same masked bytes at several addresses, and are different only in
+their relocated operands. Object.lto has seven 371-byte
+`_Rb_tree::insert_unique` copies, one for each map type. Each one calls
+the `_M_create_node` of its own type. It has 24 79-byte
+`Default<Class>Constructor` thunks. Each one calls the constructor of its
+base and stores the vtables of its own class. Before this rule, name
+order and the anchors of the object chose the address. Tron 2.0's
+`DefaultAIVolumeStairsConstructor` was identical at 0x101553d0. That
+function calls the constructor of `ClientLightFX`, not of `AIVolume`.
+
+Now, where our image is linked, the scorer does for these functions what
+the operand map does for the stubs (`_verify_long_hits`):
+
+1. It makes a map from our addresses to the shipped addresses. The map
+   comes only from the functions placed without a choice (one hit, the
+   address that their name gives, or a stub whose operands agree).
+2. At each hit, it compares each relocated operand through that map. An
+   operand that maps to a different shipped address refutes the hit. A
+   string with different content refutes it. A vtable of ours refutes it
+   when a slot maps to a function different from the one in the same
+   slot of the shipped table. A slot that nothing maps refutes it too,
+   when our function there is a short body with no relocation and the
+   shipped slot's function has other bytes. (Object.lto's
+   `AIVolume::GetVolumeType` returns 4 for `AIVolumeStairs`, 8 for
+   `AIVolumeLedge` and 0x100 for `AIVolumeAmbientLife`. Thus the three
+   constructor thunks that call `AIVolume`'s constructor go to the three
+   shipped addresses whose vtables return the same values.)
+3. An address of ours that our own link's `/OPT:ICF` gave to several
+   functions is unknown, not evidence. (Our Object.lto link gives
+   `~LTObjRefNotifier` the address of `~LineSystem::SystemEntry`. The
+   shipped image keeps them apart.)
+4. It gives each function one hit where nothing refutes it, and each hit
+   to one function (a matching). A hit where operands agree goes first.
+   The copies of one COMDAT are one function. A function of ours that
+   gets no hit, and whose bytes and relocation targets in our image are
+   those of a function that got one, is folded onto it: the shipped
+   link's `/OPT:ICF` made them one function (NOLF2's
+   `CLTClient::GetOccluderID` and `CLTServer::GetOccluderID` at
+   Lithtech.exe 0x472c70). Where the shipped image keeps such functions
+   apart, each one gets its own hit (each object's `_$E13` in Tron 2.0's
+   SndDrv.dll).
+5. A function that has only one such hit is proven there. It joins the
+   map, and the pass repeats.
+6. Two chosen hits must not overlap. A hit can be a byte run inside
+   another function, or a function can be longer than its row. The
+   longer function keeps its hit, the hit of the other is banned for it,
+   and the matching runs again. (Before, the second function was then
+   placed nowhere, although it had a free hit.)
+
+A function that all its hits refute is identical nowhere: its bytes
+match, but its operands name other things. It goes to the near pairing,
+at one of its own hits first. A hit that no function took is left to the
+position join: the content pairing does not put a function of other bytes
+there. This rule makes nothing identical that the masked bytes do not
+match. It only chooses among those addresses, or removes one.
+
+Before this rule, each copy of a COMDAT took a hit of its own. Tron 2.0's
+CShell.dll has the `vector<CLTGUICtrl*>::_M_insert_overflow` of 10
+objects. Thus one function was identical at several addresses, and the
+other functions there (other instantiations, other classes' deleting
+destructors) were counted as identical too. Now one copy stands for the
+function. An address that only such a copy held becomes near or todo.
+Expect losses when this rule first runs on a project: each lost row was
+credited to a copy of a function that is placed elsewhere, or to a
+function whose operands name other things there.
+
+With `PROGRESS_SHAPE_LOG=1`, the scorer writes each move, each copy that
+leaves an address and, for each function identical nowhere, the operand
+that refutes it at each hit. `PROGRESS_LONG_WHY=<address>[,<address>]`
+writes, for each function of ours whose masked bytes match there, its
+state there and the operand that refutes it.
+
+An image with remainders is scored two times (`rows_for_image`). The
+second run now starts with no placements. Before, a name that the first
+run left at an address displaced the function that the second run put
+there, and the function of that name then took a second address.
+
 ### Split tails and folded code
 
 Some places in the shipped image are not one function for each row. The
@@ -735,6 +834,20 @@ instruction that jumps there, the function it belongs to -- as the existing
 rows do. A reviewer has to be able to check it without redoing your work.
 Changing the denominator without evidence is the one way to make the
 scoreboard lie.
+
+Before you add a row, make sure that no rule of `enumfuncs.py` finds the
+start. Rule 4h finds a function that only a tail jump (`jmp rel32`) or a
+loaded address (`mov r32, imm32`) reaches. A wrapper `if (p) return
+p->Get(); return 0;` ends in `jmp Get`. A member-function pointer to a
+virtual function is the address of its vcall thunk (`mov eax,[ecx]; jmp
+[eax+d]`), loaded into a register. Before rule 4h, each such function
+merged into the row in front of it. Examples are Tron 2.0 Object.lto
+0x101daab0 (`CAISenseRecorderAbstract::GetDoneProcessingStimuli`),
+0x101daca0 (`IncrementIntersectSegmentCount`) and the vcall thunk at
+0x1002e5b0. The rule takes the target only where the code in front of it
+ended: the target is 16-aligned, and padding (0x90 or 0xCC) separates it
+from a `ret` or a `ret imm16`. VC6 puts padding only between functions.
+Thus a label inside a function is never such a target.
 
 Some of that evidence is mechanical. `tools/enumproof.py` (892868a)
 collects it next to the unwritten and near rows. It decodes each row by
