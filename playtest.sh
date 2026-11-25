@@ -63,7 +63,9 @@
 #                         page, mapped to the window as PLAYTEST_MAP says:
 #                         "retail" (the page centred, unscaled; the default
 #                         for a release build) or "modern" (the centred 4:3
-#                         area, scaled by the height: docs/MODERN.md M-G2; the
+#                         area, scaled by the height; on a screen narrower
+#                         than 4:3 by the width, the page centred up and
+#                         down: docs/MODERN.md M-G2; the
 #                         default for a game directory named *modern*)
 #   mclick <x> <y>        the same, then a click of button 1
 #   pad [button...] [axis=value...]
@@ -295,7 +297,7 @@ TAKEFOCUS
     pagemove() {
         local p
         p="$(awk -v lx=$1 -v ly=$2 -v W=$((WW-2)) -v H=$((WH-2)) -v m="${PLAYTEST_MAP:-retail}" 'BEGIN {
-            if (m == "modern") { s = H/480; x = lx*s + (W - H*4/3)/2; y = ly*s }
+            if (m == "modern") { s = H/480; if (W/640 < s) s = W/640; x = lx*s + (W - 640*s)/2; y = ly*s + (H - 480*s)/2 }
             else { x = lx + (W-640)/2; y = ly + (H-480)/2 }
             printf "%d %d", x, y }')"
         set -- $p
