@@ -381,6 +381,48 @@ def enumerate_functions(img):
             add(tlo + off + 10 + struct.unpack_from("<i", text, off + 6)[0],
                 "thunk")
 
+    # 4h. a function after padding that only a tail jump or a loaded
+    #     address reaches. A wrapper `if (p) return p->Get(); return 0;`
+    #     compiles to `mov ecx,[ecx+d]; test ecx,ecx; je; jmp Get`: a
+    #     `jmp rel32`, which rules 1 to 4 do not take as a start (a jmp
+    #     inside a function goes to a label). A member-function pointer
+    #     to a virtual function is the address of its vcall thunk (`mov
+    #     eax,[ecx]; jmp [eax+d]`), loaded as `mov r32,imm32` (b8+r),
+    #     and rule 3 takes only `push imm32`. Rule 6 sees neither: the
+    #     body (`mov eax,[ecx+0x14]; ret`) has no prologue. Each one
+    #     merged into the row in front of it: Tron 2.0 Object.lto
+    #     0x101daab0 (CAISenseRecorderAbstract::GetDoneProcessingStimuli,
+    #     tail-jumped to from 0x1012c16a and 0x1021edd7), 0x101daca0
+    #     (IncrementIntersectSegmentCount, from 0x1012c20a and
+    #     0x1021ee57), and 0x1002e5b0 (a vcall thunk, `mov eax,0x1002e5b0`
+    #     at 0x1002e083).
+    #     The target is a start only where the code in front of it has
+    #     ended: it is 16-aligned, and one or more padding bytes (0x90,
+    #     0xCC) separate it from a `ret` or `ret imm16` in front. VC6 puts
+    #     padding only between functions, so a label inside a function is
+    #     never there (a jump table after its function is reached by
+    #     `jmp [reg*4+table]`, not by these two forms).
+    def after_padding(o):
+        if (tlo + o) % 16 or o < 2 or text[o - 1] not in (0x90, 0xCC):
+            return False
+        p = o
+        while p > 0 and text[p - 1] in (0x90, 0xCC):
+            p -= 1
+        return (p >= 1 and text[p - 1] == 0xC3) or \
+            (p >= 3 and text[p - 3] == 0xC2 and text[p - 1] == 0 and
+             text[p - 2] % 4 == 0)
+
+    for off in range(len(text) - 5):
+        b = text[off]
+        if b == 0xE9:
+            t = off + 5 + struct.unpack_from("<i", text, off + 1)[0]
+        elif 0xB8 <= b <= 0xBF:
+            t = struct.unpack_from("<I", text, off + 1)[0] - tlo
+        else:
+            continue
+        if 0 <= t < len(text) - 4 and tlo + t not in src and after_padding(t):
+            add(tlo + t, "tailjmp" if b == 0xE9 else "mfp")
+
     # 5. exports
     for va, nm in img.exports().items():
         src[va] = "export"

@@ -16,7 +16,12 @@ through a changed byte (progress.py, buildcmp.py); known and new data
 differences (datacheck.py); a switch's jump table matched by the case
 labels its entries name, not by its masked bytes (exematch.py), and a
 start inside a near function's switch tables merged into it
-(_merge_split_tails). Not covered here, by their nature: vtabcheck.py
+(_merge_split_tails); end to end through _rows_for_image: a function
+our link leaves out pairs only where nothing of our link does, long
+look-alikes chosen by what they call and by their vtables' slots, or
+identical nowhere, and a second run that starts from nothing; and
+enumfuncs' rule 4h (a start reached only by a tail jump or a loaded
+address). Not covered here, by their nature: vtabcheck.py
 and the region rules need a linked image and a map (tested against the
 games' builds: see tools/README.md).
 """
@@ -434,3 +439,362 @@ class DataCheck(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+REL32 = 0x14
+
+
+def coff_funcs(funcs):
+    """A COFF object: one .text section that holds each function of
+    `funcs`, [(name, code, [(offset, symbol, relocation type)])], at a
+    16-aligned offset (0xCC between them). A symbol a relocation names
+    that no function defines is an external."""
+    text, at = bytearray(), {}
+    for name, code, _r in funcs:
+        text += b"\xcc" * (-len(text) % 16)
+        at[name] = len(text)
+        text += code
+    names = [n for n, _c, _r in funcs]
+    for _n, _c, rel in funcs:
+        for _o, s, _k in rel:
+            if s not in names:
+                names.append(s)
+    strtab = bytearray(b"\0\0\0\0")
+    syms = bytearray()
+    for n in names:
+        b = n.encode()
+        if len(b) <= 8:
+            raw = b.ljust(8, b"\0")
+        else:
+            raw = struct.pack("<II", 0, len(strtab))
+            strtab += b + b"\0"
+        sec = 1 if n in at else 0
+        syms += raw + struct.pack("<IhHBB", at.get(n, 0), sec, 0x20, 2, 0)
+    struct.pack_into("<I", strtab, 0, len(strtab))
+    relocs = bytearray()
+    nrel = 0
+    for n, _c, rel in funcs:
+        for o, s, k in rel:
+            relocs += struct.pack("<IIH", at[n] + o, names.index(s), k)
+            nrel += 1
+    text_p = 20 + 40
+    rel_p = text_p + len(text)
+    sym_p = rel_p + len(relocs)
+    out = bytearray(struct.pack("<HHIIIHH", 0x14C, 1, 0, sym_p, len(names),
+                                0, 0))
+    out += struct.pack("<8sIIIIIIHHI", b".text", 0, 0, len(text), text_p,
+                       rel_p, 0, nrel, 0, 0x60000020)
+    out += text + relocs + syms + strtab
+    return bytes(out)
+
+
+def body(seed, n=40):
+    """`n` bytes of straight-line code, different for each seed (x87
+    register moves and `mov eax, imm32`), ending in `ret`."""
+    out = bytearray()
+    while len(out) < n - 6:
+        out += bytes([0xB8]) + struct.pack("<I", (seed * 2654435761 +
+                                                  len(out)) & 0x7FFFFFFF)
+    return bytes(out[:n - 1]).ljust(n - 1, b"\x90").replace(
+        b"\x90", b"\xd9") + b"\xc3"
+
+
+class Image:
+    """A shipped image or our link of one: functions placed at fixed
+    offsets in .text (base 0x400000, .text at 0x401000), each call a
+    `call rel32` to another of them."""
+    BASE = 0x401000
+
+    def __init__(self, layout, size=0x400):
+        # layout: [(offset, name, code, [(offset in code, callee)])]
+        self.at = {n: self.BASE + o for o, n, _c, _r in layout}
+        text = bytearray(b"\xcc" * size)
+        for o, n, code, calls in layout:
+            text[o:o + len(code)] = code
+            for co, callee in calls:
+                struct.pack_into("<i", text, o + co,
+                                 self.at[callee] - (self.BASE + o + co + 4))
+        self.text = bytes(text)
+        self.rdata = b"\0" * 16
+        self.data_syms = {}          # name -> address, for the map
+
+
+class Rows(unittest.TestCase):
+    """_rows_for_image end to end: a shipped image, our objects, our
+    linked image and its map."""
+
+    def score(self, shipped, ours, objs):
+        """shipped, ours: Image. objs: {file name: coff bytes}. The map
+        lists what `ours` places, under the object that defines it."""
+        t = Tmp()
+        sp = t.write("ship.exe", pe(shipped.text, shipped.rdata))
+        op = t.write("ours.exe", pe(ours.text, ours.rdata))
+        paths = [t.write(n, d) for n, d in objs.items()]
+        owner = {}
+        from exematch import parse_obj_masked
+        for n, d in objs.items():
+            for f in parse_obj_masked(d):
+                owner.setdefault(f, n)
+        mp = t.write("ours.map", "".join(
+            " 0001:%08x       %s %08x f   %s\n" % (a - Image.BASE, n, a,
+                                                   owner[n])
+            for n, a in sorted(ours.at.items(), key=lambda kv: kv[1])
+            if n in owner).encode() + "".join(
+            " 0002:%08x       %s %08x     x.obj\n" % (a - 0x402000, n, a)
+            for n, a in sorted(ours.data_syms.items())).encode())
+        tgt = dict(label="T.exe", kind="image", shipped=sp, built=op,
+                   stem="T", app=[(0x401000, 0x402000)])
+        progress.BY_LABEL["T.exe"] = tgt
+        for d in (progress.PLACED_SYMS, progress.SMALL_SYMS):
+            for k in [k for k in d if k[0] == "T.exe"]:
+                del d[k]
+        progress.NEAR_PAIRS[:] = [r for r in progress.NEAR_PAIRS
+                                  if r[0] != "T.exe"]
+        self.last = (paths, mp, None)
+        rows = progress._rows_for_image(tgt, paths, mp, None)
+        status = {int(n[4:], 16): st for _l, n, _s, st in rows
+                  if n.startswith("sub_")}
+        near = {r[1]: r[3].split(":", 1)[1] for r in progress.NEAR_PAIRS
+                if r[0] == "T.exe"}
+        ident = {a: n.split(":", 1)[1]
+                 for (l, a), n in progress.PLACED_SYMS.items()
+                 if l == "T.exe" and status.get(a) == "identical"}
+        return status, near, ident, rows
+
+    @staticmethod
+    def caller(names):
+        """A function that calls each of `names` (so each is a start)."""
+        code = bytearray()
+        for i, _n in enumerate(names):
+            code += b"\xe8\0\0\0\0"
+        code += b"\xc3"
+        return bytes(code), [(1 + 5 * i, n) for i, n in enumerate(names)]
+
+    def test_unlinked_code_takes_no_address_from_linked_code(self):
+        # A, B: identical in both images (the anchors). P: the shipped
+        # function between them. L: ours of it, in our link between A and
+        # B, too different to pair by content. U: a function our link
+        # leaves out, whose bytes agree with P's on more than half: by
+        # content it would take P, and L would stay unplaced.
+        a, b = body(1), body(2)
+        p = body(3, 64)
+        u = bytearray(p)
+        for i in range(0, 64, 7):
+            u[i] ^= 0x01             # agrees on most bytes, matches nowhere
+        u[-1] = 0xC3
+        l = body(4, 56)
+        root, calls = self.caller(["_a", "_p", "_b"])
+        shipped = Image([(0x000, "_a", a, []), (0x040, "_p", p, []),
+                         (0x080, "_b", b, []), (0x100, "_root", root, calls)])
+        ours = Image([(0x000, "_a", a, []), (0x040, "_l", l, []),
+                      (0x080, "_b", b, [])])
+        objs = {"x.obj": coff_funcs([("_a", a, []), ("_l", l, []),
+                                     ("_b", b, [])]),
+                "y.obj": coff_funcs([("_u", bytes(u), [])])}
+        status, near, ident, rows = self.score(shipped, ours, objs)
+        p_at = shipped.at["_p"]
+        self.assertEqual(ident.get(shipped.at["_a"]), "_a")
+        self.assertEqual(status.get(p_at), "near")
+        self.assertEqual(near.get(p_at), "_l")
+        self.assertNotIn(("T.exe", "y.obj:_u", len(u), "near"), rows)
+        self.assertFalse(any(n.endswith(":_l") and st == "unplaced"
+                             for _l, n, _s, st in rows))
+
+    def test_unlinked_code_pairs_where_nothing_linked_does(self):
+        # the same U, with nothing of our link for P: it pairs there
+        a, b = body(1), body(2)
+        p = body(3, 64)
+        u = bytearray(p)
+        for i in range(0, 64, 7):
+            u[i] ^= 0x01
+        u[-1] = 0xC3
+        root, calls = self.caller(["_a", "_p", "_b"])
+        shipped = Image([(0x000, "_a", a, []), (0x040, "_p", p, []),
+                         (0x080, "_b", b, []), (0x100, "_root", root, calls)])
+        ours = Image([(0x000, "_a", a, []), (0x080, "_b", b, [])])
+        objs = {"x.obj": coff_funcs([("_a", a, []), ("_b", b, [])]),
+                "y.obj": coff_funcs([("_u", bytes(u), [])])}
+        status, near, _ident, _rows = self.score(shipped, ours, objs)
+        self.assertEqual(near.get(shipped.at["_p"]), "_u")
+
+    def look_alikes(self, ours_calls):
+        """Two shipped copies of one shape, F1 calling X and F2 calling Y
+        (X and Y unique). Ours: X, Y and one copy calling `ours_calls`."""
+        x, y = body(5), body(6)
+        f = b"\xe8\0\0\0\0" + body(7, 48)
+        root, calls = self.caller(["_f1", "_f2"])
+        shipped = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                         (0x080, "_f1", f, [(1, "_x")]),
+                         (0x0c0, "_f2", f, [(1, "_y")]),
+                         (0x100, "_root", root, calls)])
+        ours = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                      (0x080, "_f", f, [(1, ours_calls)])])
+        objs = {"x.obj": coff_funcs([("_x", x, []), ("_y", y, []),
+                                     ("_f", f, [(1, ours_calls, REL32)])])}
+        return shipped, self.score(shipped, ours, objs)
+
+    def test_look_alikes_are_chosen_by_what_they_call(self):
+        # name order and the object's anchors put ours at F1, which
+        # calls X; ours calls Y, so it is F2
+        shipped, (status, _near, ident, _rows) = self.look_alikes("_y")
+        self.assertEqual(ident.get(shipped.at["_f2"]), "_f")
+        self.assertNotEqual(status.get(shipped.at["_f1"]), "identical")
+        shipped, (status, _near, ident, _rows) = self.look_alikes("_x")
+        self.assertEqual(ident.get(shipped.at["_f1"]), "_f")
+        self.assertNotEqual(status.get(shipped.at["_f2"]), "identical")
+
+    def test_a_second_run_starts_from_nothing(self):
+        # three shipped copies (calling X, Y and Z), two of ours (calling Y
+        # and X), scored twice as an image with remainders is: the second
+        # run must not keep the first run's names at the addresses
+        x, y, z = body(5), body(6), body(8)
+        f = b"\xe8\0\0\0\0" + body(7, 48)
+        root, calls = self.caller(["_h1", "_h2", "_h3", "_z"])
+        shipped = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                         (0x080, "_h1", f, [(1, "_y")]),
+                         (0x0c0, "_h2", f, [(1, "_x")]),
+                         (0x100, "_h3", f, [(1, "_z")]),
+                         (0x140, "_root", root, calls),
+                         (0x180, "_z", z, [])])
+        ours = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                      (0x080, "_g1", f, [(1, "_x")]),
+                      (0x0c0, "_g2", f, [(1, "_y")]),
+                      (0x100, "_z", z, [])])
+        objs = {"x.obj": coff_funcs([("_x", x, []), ("_y", y, []),
+                                     ("_g1", f, [(1, "_x", REL32)]),
+                                     ("_g2", f, [(1, "_y", REL32)]),
+                                     ("_z", z, [])])}
+        first = self.score(shipped, ours, objs)
+        tgt = progress.BY_LABEL["T.exe"]
+        rows = progress._rows_for_image(tgt, *self.last)
+        self.assertEqual(sorted(rows), sorted(first[3]))
+        self.assertEqual(first[2].get(shipped.at["_h1"]), "_g2")
+        self.assertEqual(first[2].get(shipped.at["_h2"]), "_g1")
+        self.assertNotEqual(first[0].get(shipped.at["_h3"]), "identical")
+
+    def test_look_alikes_are_chosen_by_their_vtables(self):
+        # two shipped copies of a constructor shape, each storing its own
+        # class's vtable; the vtables are different in one slot, `mov
+        # eax, 4; ret` against `mov eax, 8; ret` (a GetType). Ours stores
+        # the vtable whose slot is ours of the second: it is the second
+        # copy, though nothing maps either vtable
+        g4, g8 = bytes.fromhex("b804000000c3"), bytes.fromhex("b808000000c3")
+        f = bytes.fromhex("c701") + b"\0" * 4 + body(7, 48)
+        root, calls = self.caller(["_c1", "_c2"])
+        shipped = Image([(0x000, "_g4", g4, []), (0x010, "_g8", g8, []),
+                         (0x080, "_c1", f, []), (0x0c0, "_c2", f, []),
+                         (0x100, "_root", root, calls)])
+        text = bytearray(shipped.text)
+        struct.pack_into("<I", text, 0x082, 0x402000)
+        struct.pack_into("<I", text, 0x0c2, 0x402010)
+        shipped.text = bytes(text)
+        shipped.rdata = struct.pack("<IIII", shipped.at["_g4"], 0, 0, 0) + \
+            struct.pack("<IIII", shipped.at["_g8"], 0, 0, 0)
+        ours = Image([(0x010, "_g8", g8, []), (0x080, "_c", f, [])])
+        text = bytearray(ours.text)
+        struct.pack_into("<I", text, 0x082, 0x402000)
+        ours.text = bytes(text)
+        ours.rdata = struct.pack("<IIII", ours.at["_g8"], 0, 0, 0)
+        ours.data_syms = {"??_7B@@6B@": 0x402000}
+        objs = {"x.obj": coff_funcs([("_g8", g8, []),
+                                     ("_c", f, [(2, "??_7B@@6B@", DIR32)])])}
+        status, _near, ident, _rows = self.score(shipped, ours, objs)
+        self.assertEqual(ident.get(shipped.at["_c2"]), "_c")
+        self.assertNotEqual(status.get(shipped.at["_c1"]), "identical")
+
+    def test_functions_the_shipped_link_folds_are_one(self):
+        # two functions of ours with the same bytes, both calling X: the
+        # shipped link's /OPT:ICF keeps one copy (F1). F2 calls Y. One of
+        # ours is identical at F1, the other is the same function (not
+        # unplaced, nor paired near at F2, which is a function we lack)
+        x, y = body(5), body(6)
+        f = b"\xe8\0\0\0\0" + body(7, 48)
+        root, calls = self.caller(["_f1", "_f2"])
+        shipped = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                         (0x080, "_f1", f, [(1, "_x")]),
+                         (0x0c0, "_f2", f, [(1, "_y")]),
+                         (0x100, "_root", root, calls)])
+        ours = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                      (0x080, "_a", f, [(1, "_x")]),
+                      (0x0c0, "_b", f, [(1, "_x")])])
+        objs = {"x.obj": coff_funcs([("_x", x, []), ("_y", y, []),
+                                     ("_a", f, [(1, "_x", REL32)]),
+                                     ("_b", f, [(1, "_x", REL32)])])}
+        status, _near, ident, rows = self.score(shipped, ours, objs)
+        self.assertIn(ident.get(shipped.at["_f1"]), ("_a", "_b"))
+        self.assertEqual(status.get(shipped.at["_f2"]), "todo")
+        self.assertFalse([r for r in rows if r[3] == "unplaced"])
+
+    def test_look_alikes_that_name_other_things_are_identical_nowhere(self):
+        # ours calls Z, which is placed (identical) at neither callee
+        x, y, z = body(5), body(6), body(8)
+        f = b"\xe8\0\0\0\0" + body(7, 48)
+        root, calls = self.caller(["_f1", "_f2", "_z"])
+        shipped = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                         (0x080, "_f1", f, [(1, "_x")]),
+                         (0x0c0, "_f2", f, [(1, "_y")]),
+                         (0x100, "_root", root, calls),
+                         (0x140, "_z", z, [])])
+        ours = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                      (0x080, "_f", f, [(1, "_z")]), (0x0c0, "_z", z, [])])
+        objs = {"x.obj": coff_funcs([("_x", x, []), ("_y", y, []),
+                                     ("_f", f, [(1, "_z", REL32)]),
+                                     ("_z", z, [])])}
+        status, _near, ident, _rows = self.score(shipped, ours, objs)
+        self.assertEqual(ident.get(shipped.at["_z"]), "_z")
+        self.assertNotEqual(status.get(shipped.at["_f1"]), "identical")
+        self.assertNotEqual(status.get(shipped.at["_f2"]), "identical")
+
+
+class TailJumpStarts(unittest.TestCase):
+    """enumfuncs rule 4h: a function after padding that only a `jmp
+    rel32` or a `mov r32, imm32` reaches is a start; a jump to a label
+    inside a function is not."""
+
+    def starts(self, text):
+        from enumfuncs import Image as EImage, enumerate_functions
+        t = Tmp()
+        p = t.write("t.exe", pe(text, b"\0" * 16))
+        return set(enumerate_functions(EImage(p))[0])
+
+    def test_tail_jump_and_loaded_address(self):
+        b = 0x401000
+        text = bytearray(b"\xcc" * 0x100)
+        # 0x00: called; mov ecx,[ecx+0x54]; test ecx,ecx; je +5; jmp 0x30;
+        #       xor eax,eax; ret
+        text[0x00:0x0c] = bytes.fromhex("8b495485c97405e9") + \
+            struct.pack("<i", 0x30 - 0x0c)
+        text[0x0c:0x0f] = bytes.fromhex("33c0c3")
+        # 0x20: ... ret 4; then padding; 0x30: mov eax,[ecx+0x14]; ret
+        text[0x20:0x23] = bytes.fromhex("c20400")
+        text[0x30:0x34] = bytes.fromhex("8b4114c3")
+        # 0x40: mov eax, 0x401060; ret | 0x60: mov eax,[ecx]; jmp [eax+0x64]
+        text[0x3f] = 0xC3
+        text[0x40:0x46] = b"\xb8" + struct.pack("<I", b + 0x60) + b"\xc3"
+        text[0x60:0x65] = bytes.fromhex("8b01ff6064")
+        # 0x80: called: xor eax,eax; jmp 0x88 (a label inside it)
+        text[0x80:0x87] = b"\x33\xc0\xe9" + struct.pack("<i", 0x88 - 0x87)
+        text[0x87:0x8b] = bytes.fromhex("40" "40" "40" "c3")
+        # the calls that make 0x00, 0x20, 0x40 and 0x80 starts
+        calls = bytearray()
+        for i, t0 in enumerate((0x00, 0x20, 0x40, 0x80)):
+            calls += b"\xe8" + struct.pack("<i", t0 - (0xc0 + 5 * i + 5))
+        text[0xc0:0xc0 + len(calls)] = calls
+        text[0x1f] = 0xC3
+        s = self.starts(bytes(text))
+        self.assertIn(b + 0x30, s)
+        self.assertIn(b + 0x60, s)
+        self.assertNotIn(b + 0x88, s)
+
+    def test_no_start_without_padding_after_a_ret(self):
+        # the same jump to a 16-aligned address that runs on from the code
+        # in front (no ret, no padding): a label, not a start
+        b = 0x401000
+        text = bytearray(b"\xcc" * 0x100)
+        text[0x00:0x07] = b"\x33\xc0\xe9" + struct.pack("<i", 0x30 - 0x07)
+        text[0x07:0x30] = b"\x40" * 0x29
+        text[0x30:0x32] = bytes.fromhex("33c0")
+        text[0x32] = 0xC3
+        text[0xc0:0xc5] = b"\xe8" + struct.pack("<i", 0x00 - 0xc5)
+        s = self.starts(bytes(text))
+        self.assertNotIn(b + 0x30, s)
