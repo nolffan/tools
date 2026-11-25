@@ -2087,7 +2087,10 @@ def _verify_long_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
     fewer such hits goes first, and a hit where operands agree, then an
     enumerated start, then the nearest to where it was. A function whose
     only unrefuted hit is one address is proven there and joins the
-    mapping; the pass repeats until nothing more is proven. One left
+    mapping; the pass repeats until nothing more is proven. Chosen hits
+    that overlap (a byte run inside another function, or a function
+    longer than its row) are not both kept: the shorter function's hit is
+    banned for it, and the matching runs again. One left
     with no hit, whose bytes and relocation targets are those of one that
     got a hit, is folded onto it (/OPT:ICF), not refuted. A function
     that every hit refutes is identical NOWHERE: the same bytes name other
@@ -2380,57 +2383,79 @@ def _verify_long_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
     pick = {}
     good, nowhere = set(), set()
     choice = {}
-    for _round in range(16):
-        m = mapping(base + sorted(pick[(g, choice[g])] for g in good))
-        # each function's hits where no operand refutes it, those whose
-        # operands agree first, then the most operands that agree, then
-        # an enumerated start, then the nearest to where it was
-        edges = {}
-        for n in reps:
-            # (any copy's hits: one object's copy can have compiled to
-            # other bytes; at a hit, the longest copy that is there)
-            ss = {}
-            for c in groups[key(n)]:
-                for h in all_hits.get(c, ()):
-                    if h not in ss or size(c) > size(pick[(n, h)]):
-                        pick[(n, h)] = c
-                        ss[h] = None
-            for h in ss:
-                ss[h] = state(pick[(n, h)], h, m)
-            edges[n] = sorted(
-                (h for h, (st, _k) in ss.items()
-                 if st != "refuted" and usable(pick[(n, h)], h)),
-                key=lambda h: (ss[h][0] != "ok", -ss[h][1],
-                               h not in start_set, abs(h - first[n])))
-        # one function for each address (a bipartite matching, by
-        # augmenting paths): a function that fits at one address only gets
-        # it, and one whose operands agree goes before one that only fits
-        owner = {}
+    banned = set()     # (function, hit): the hit overlaps a chosen one
+    for _fix in range(8):
+        for _round in range(16):
+            m = mapping(base + sorted(pick[(g, choice[g])] for g in good))
+            # each function's hits where no operand refutes it, those whose
+            # operands agree first, then the most operands that agree, then
+            # an enumerated start, then the nearest to where it was
+            edges = {}
+            for n in reps:
+                # (any copy's hits: one object's copy can have compiled to
+                # other bytes; at a hit, the longest copy that is there)
+                ss = {}
+                for c in groups[key(n)]:
+                    for h in all_hits.get(c, ()):
+                        if (n, h) in banned:
+                            continue
+                        if h not in ss or size(c) > size(pick[(n, h)]):
+                            pick[(n, h)] = c
+                            ss[h] = None
+                for h in ss:
+                    ss[h] = state(pick[(n, h)], h, m)
+                edges[n] = sorted(
+                    (h for h, (st, _k) in ss.items()
+                     if st != "refuted" and usable(pick[(n, h)], h)),
+                    key=lambda h: (ss[h][0] != "ok", -ss[h][1],
+                                   h not in start_set, abs(h - first[n])))
+            # one function for each address (a bipartite matching, by
+            # augmenting paths): a function that fits at one address only gets
+            # it, and one whose operands agree goes before one that only fits
+            owner = {}
 
-        def augment(n, seen):
-            for h in edges[n]:
-                if h in seen:
-                    continue
-                seen.add(h)
-                if h not in owner or augment(owner[h], seen):
-                    owner[h] = n
-                    return True
-            return False
-        lim = sys.getrecursionlimit()
-        sys.setrecursionlimit(max(lim, 4 * len(reps) + 1000))
-        for n in sorted(reps, key=lambda n: (len(edges[n]), n)):
-            augment(n, set())
-        sys.setrecursionlimit(lim)
-        choice = {n: h for h, n in owner.items()}
-        owner_last = dict(owner)
-        # proven: the only address where nothing refutes it
-        new = {n for n in reps if len(edges[n]) == 1 and
-               choice.get(n) == edges[n][0]} - good
-        if not new:
+            def augment(n, seen):
+                for h in edges[n]:
+                    if h in seen:
+                        continue
+                    seen.add(h)
+                    if h not in owner or augment(owner[h], seen):
+                        owner[h] = n
+                        return True
+                return False
+            lim = sys.getrecursionlimit()
+            sys.setrecursionlimit(max(lim, 4 * len(reps) + 1000))
+            for n in sorted(reps, key=lambda n: (len(edges[n]), n)):
+                augment(n, set())
+            sys.setrecursionlimit(lim)
+            choice = {n: h for h, n in owner.items()}
+            owner_last = dict(owner)
+            # proven: the only address where nothing refutes it
+            new = {n for n in reps if len(edges[n]) == 1 and
+                   choice.get(n) == edges[n][0]} - good
+            if not new:
+                break
+            good |= new
+            for n in new:
+                at[pick[(n, choice[n])]] = choice[n]
+        # Two chosen hits must not overlap (a hit inside another function,
+        # or a function longer than its row): the longer one keeps its
+        # hit, the other's is banned, and the matching runs again.
+        taken_spans = []
+        clash = False
+        for n in sorted(choice, key=lambda n: (-size(pick[(n, choice[n])]),
+                                               n)):
+            h, z = choice[n], size(pick[(n, choice[n])])
+            if any(b < h + z and h < e for b, e in taken_spans):
+                banned.add((n, h))
+                clash = True
+                continue
+            taken_spans.append((h, h + z))
+        if not clash:
             break
-        good |= new
-        for n in new:
-            at[pick[(n, choice[n])]] = choice[n]
+        for g in [g for g in good if (g, choice.get(g)) in banned]:
+            good.discard(g)
+            at.pop(pick[(g, choice[g])], None)
     for n in good:
         del at[pick[(n, choice[n])]]
     # A function the shipped link's /OPT:ICF folds into another of ours

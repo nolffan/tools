@@ -725,6 +725,37 @@ class Rows(unittest.TestCase):
         self.assertEqual(status.get(shipped.at["_f2"]), "todo")
         self.assertFalse([r for r in rows if r[3] == "unplaced"])
 
+    def test_chosen_hits_do_not_overlap(self):
+        # A (0x50 bytes) ends with B's bytes. Shipped: A1 at 0x080 calls
+        # X and Y, so B's shape is also at 0x0b0, an enumerated start
+        # (something calls it) inside A1; A2 at 0x100 calls Z and W; B
+        # alone at 0x180 (no start: nothing calls it) calls Y. Ours: A
+        # calls X and Y, B calls Y. B's operands agree at 0x0b0 and at
+        # 0x180, and 0x0b0 is a start, but A has it: B keeps 0x180
+        x, y = body(5), body(6)
+        z, w, v = body(10), body(11), body(12)
+        b = b"\xe8\0\0\0\0" + body(7, 0x1b)
+        a = b"\xe8\0\0\0\0" + body(8, 0x2b) + b
+        root, calls = self.caller(["_a1", "_b0", "_a2"])
+        shipped = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                         (0x080, "_a1", a, [(1, "_x"), (0x31, "_y")]),
+                         (0x0b0, "_b0", b"", []),
+                         (0x100, "_a2", a, [(1, "_z"), (0x31, "_w")]),
+                         (0x180, "_b2", b, [(1, "_y")]),
+                         (0x1c0, "_root", root, calls),
+                         (0x200, "_z", z, []), (0x240, "_w", w, []),
+                         (0x280, "_v", v, [])], size=0x300)
+        ours = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                      (0x080, "_a", a, [(1, "_x"), (0x31, "_y")]),
+                      (0x100, "_b", b, [(1, "_y")])])
+        objs = {"x.obj": coff_funcs([
+            ("_x", x, []), ("_y", y, []),
+            ("_a", a, [(1, "_x", REL32), (0x31, "_y", REL32)]),
+            ("_b", b, [(1, "_y", REL32)])])}
+        status, _near, ident, _rows = self.score(shipped, ours, objs)
+        self.assertEqual(ident.get(shipped.at["_a1"]), "_a")
+        self.assertEqual(ident.get(shipped.at["_b2"]), "_b")
+
     def test_look_alikes_that_name_other_things_are_identical_nowhere(self):
         # ours calls Z, which is placed (identical) at neither callee
         x, y, z = body(5), body(6), body(8)

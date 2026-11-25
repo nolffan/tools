@@ -579,6 +579,11 @@ the operand map does for the stubs (`_verify_long_hits`):
    SndDrv.dll).
 5. A function that has only one such hit is proven there. It joins the
    map, and the pass repeats.
+6. Two chosen hits must not overlap. A hit can be a byte run inside
+   another function, or a function can be longer than its row. The
+   longer function keeps its hit, the hit of the other is banned for it,
+   and the matching runs again. (Before, the second function was then
+   placed nowhere, although it had a free hit.)
 
 A function that all its hits refute is identical nowhere: its bytes
 match, but its operands name other things. It goes to the near pairing,
