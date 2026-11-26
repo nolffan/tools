@@ -613,6 +613,113 @@ second run now starts with no placements. Before, a name that the first
 run left at an address displaced the function that the second run put
 there, and the function of that name then took a second address.
 
+**Each operand of an identical row must name the same thing**
+(`_verify_datarefs`). The masked comparison masks every relocated operand.
+Thus a function that reads the wrong global is byte-identical to the
+function that reads the correct global. Tron 2.0's
+`CTronWeaponChooser::Close` (CShell.dll 0x100afde0) called `SetWeapon` on
+`g_pHUDWeapon` (retail 0x1026da80). Retail calls it on `g_pWeaponItem`
+(0x1026edd8). The row was identical, and a quick load crashed the game
+(tron20src 5a3b83c5). Now, where our image is linked, the scorer does a
+last pass on the identical rows. For each relocated operand of each row,
+it compares our operand with the shipped operand at the same offset,
+through the map that the evidence proves:
+
+* **A function, or a place in a function.** The map has the shipped
+  address of each identical function of ours that the scorer placed
+  without a choice: its name gives the address, its operands or literals
+  agree, it is a verified small function, or it has only one hit. A place
+  in such a function maps to the same offset at that address. A shipped
+  operand that is a `jmp rel32` thunk to that address agrees.
+* **An import slot, or a `jmp [slot]` thunk.** The import names must be
+  the same. An import by ordinal gives no proof.
+* **A string literal or a floating-point constant** (`??_C@`, `__real@`).
+  The bytes must be the same. Thus a literal that one link pools and the
+  other link does not pool agrees.
+* **A vtable** (`??_7`). Each slot whose function the map proves must name
+  the same function in the same slot of the shipped table.
+* **Any other address** (a global, a table). The other identical rows that
+  name the same symbol of ours at the same address vote. A shipped address
+  that a strict majority of the votes gives, from two rows or more, maps
+  the operand. If only this row names our address, the reverse can refute
+  it: the shipped operand is an address that the other rows prove is a
+  different global of ours.
+
+The result for each operand is one of these:
+
+| result | what it means | the row |
+|---|---|---|
+| `ok` | the operand maps to the shipped operand | stays identical |
+| `equivalent` | the shipped operand is a different copy of the same thing (see below) | stays identical |
+| `unproven` | no evidence: nothing else names it, the votes do not agree, or it is outside our image | stays identical, counted in `identical_unproven` |
+| `contradiction` | the operand maps to a different shipped address | becomes near |
+
+A demoted row gives no more evidence, and the pass repeats until nothing
+changes. This rule makes nothing identical.
+
+Some differences are correct. The scorer accepts them only on evidence:
+
+* **Copies of one function.** The shipped image keeps several copies of
+  some template functions. For example, CShell.dll has more than one copy
+  of `basic_string::append`, and each copy calls its own copies of the
+  helpers. Our link keeps one copy. Two shipped functions are copies when
+  they have the same bytes except at our relocations, and each operand is
+  the same address, or a copy of the same function in turn (to a depth of
+  four). The compiler makes the exception handler, the exception tables
+  and the unwind funclets for each copy (`__ehhandler$`, `__ehfuncinfo$`,
+  `__unwindfunclet$`, ...). These can be different in each copy.
+* **Look-alikes.** If the shipped operand is a function that has the
+  masked bytes of our callee, and each literal of our callee has the same
+  content there, the operand is `unproven`, not a contradiction. Thus a
+  callee that is different only in a literal (`GetUnselectedIcon` and
+  `GetNormalIcon` of Tron 2.0's `AMMO`) is still a contradiction.
+* **The same constant.** If our symbol is read-only data of 64 bytes or
+  less, and the two shipped addresses hold the same bytes, the operand is
+  `equivalent`.
+* **Our own `/OPT:ICF`.** An address of ours that our link gives to
+  several functions agrees with the shipped address of any of them.
+* **The `readable` pages.** Their operands are the addresses of a
+  different build. The scorer does not check these rows, and they give no
+  evidence.
+
+A placement that is only the masked match (one hit, or no anchor at all)
+can be refuted by its callers. If two rows or more call our function at
+one other shipped address, and no row calls it where it is placed, and
+that address is not a copy or a look-alike of it, the placement becomes
+near. (Tron 2.0 CShell.dll: the masked bytes of `CWeaponChooser`'s
+constructor matched only at the address that the constructor of
+`CHUDAnnouncementMsgQueue` calls.)
+
+`out/progress/datarefs.csv` lists each operand that is not `ok`: the
+target, the row, our relocation's symbol, our operand, the shipped address
+that it maps to, the shipped operand and the evidence. The contradictions
+come first. `summary.json` has `near_contradicted` and
+`identical_unproven` for each target. For each target, the scorer writes
+how many rows it checked, demoted, and left on an unproven operand. With
+`PROGRESS_LONG_WHY=<address>`, it writes the result of each operand of the
+row at that address. With `PROGRESS_SHAPE_LOG=1`, it writes each
+contradiction.
+
+On Tron 2.0 (tron20src 4f64b512), the pass checked 31,614 identical rows.
+226 became near, and 10,429 rest on at least one unproven operand. The
+run time did not increase measurably (8 minutes). Approximately 40 of the
+226 are bugs in the source, for example `g_pChatMsgs` where retail has
+`g_pPickupMsgs`, and `g_pDecision` where retail has `g_pTronDecision`.
+With the old `Close` (`g_pHUDWeapon`), `Close` is near: the shipped
+operand is the address that the other rows prove is our `g_pWeaponItem`.
+
+Most contradictions on a project are not bugs in the source. They are
+placements among look-alikes that the evidence before this pass did not
+refute: a `??_G` deleting destructor whose call goes to the destructor of
+a different class, the `_$E` initializers of the statics of two objects,
+two cheat functions of one shape. The row does not become identical at
+the other address: the pass only removes credit. Look at each
+contradiction in `datarefs.csv`. If the votes name a different global of
+ours, the source is wrong (for example `g_pChatMsgs` where retail has
+`g_pPickupMsgs`). Correct the source. If the row is at the address of its
+look-alike, pin it (`own_symbols`) at the address that its operands agree
+with.
+
 ### Split tails and folded code
 
 Some places in the shipped image are not one function for each row. The
@@ -755,8 +862,11 @@ If one of the two gates fails, `make progress` fails.
 ### False variables the scorer cannot see
 
 The masked comparison masks every relocation. Thus a function can be
-byte-identical and still read or write the wrong global. Two tools find
-these false variables (tools a760122):
+byte-identical and still read or write the wrong global. The scorer now
+compares each operand of an identical row (see "Each operand of an
+identical row must name the same thing" above). It cannot prove an
+operand that only one row names. Two tools find more of these false
+variables (tools a760122):
 
 * `datarefcheck.py <image> <obj>...` does for DIR32 data references what
   `callcheck.py` does for calls. For each function that `exematch` places

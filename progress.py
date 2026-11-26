@@ -84,9 +84,17 @@ What is compared is what the build left in the tree: each target's `built`
 image and the objects and libraries its link read (its response file). Run
 `make` first; this compiles nothing.
 
+An identical row is identical only where each relocated operand names
+what the shipped operand names, through the map the evidence proves
+(_verify_datarefs): a row that reads the wrong global or calls the wrong
+function is near. An operand nothing proves leaves the row identical,
+counted as identical_unproven.
+
 Outputs (under out/progress/):
   functions.csv   one row per shipped function: target, name, size, status
   summary.json    per-target and total counts + bytes
+  datarefs.csv    each operand of an identical row that is not proven:
+                  the contradictions (the row is near), then the rest
 
 tools/ratchet.py compares those with the recorded baseline in progress/.
 `make progress` runs both.
@@ -2559,6 +2567,622 @@ def _verify_long_hits(tgt, label, matched, placed, funcs, from_lib, rkinds,
     return nowhere, left
 
 
+# label -> {"checked", "contradicted", "unproven", "equivalent"}: what
+# _verify_datarefs found, for the summary
+DATAREF_COUNTS = {}
+# (label, shipped address, ours, offset, verdict, our symbol+offset, our
+# operand, the shipped address it maps to or None, the shipped operand,
+# the evidence): each operand of an identical row that is not proven, for
+# out/progress/datarefs.csv
+DATAREF_ROWS = []
+
+
+def _verify_datarefs(tgt, label, matched, paired, funcs, from_lib, rkinds,
+                     all_hits, placed, verified, mapfile, pe, text, tva,
+                     sizes, rebased):
+    """IDENTICAL ONLY WHERE EACH OPERAND NAMES THE SAME THING. The masked
+    comparison masks every relocated operand. Thus a function that reads
+    the WRONG global is byte-identical to one that reads the right one:
+    Tron 2.0's CTronWeaponChooser::Close (CShell.dll 0x100afde0) called
+    SetWeapon on g_pHUDWeapon (retail 0x1026da80) where retail uses
+    g_pWeaponItem (0x1026edd8). It scored identical, and a quick load
+    crashed the game. Where our image is linked, this pass compares each
+    relocated operand of each identical row with the shipped operand at
+    the same offset, through the map that the evidence proves:
+
+      * a function, or a place inside one: the shipped address of an
+        identical function of ours that is placed without a choice (one
+        hit, the address its name gives, operands or literals that
+        agree, or a verified small function), plus the offset. A shipped
+        operand that is a `jmp rel32` thunk to that address agrees. A
+        shipped function with the same bytes and the same operands
+        (another copy, which the shipped link did not fold) is
+        `equivalent`.
+      * an import slot, or a `jmp [slot]` thunk: the same import name.
+      * a string literal or a floating-point constant (??_C@, __real@):
+        the same bytes. (Literals pooled or not pooled are compared by
+        content, not by address.)
+      * a vtable (??_7): each slot whose function the map proves names
+        the same function.
+      * anything else (a global, a table): the other identical rows that
+        name the same address of ours. A shipped address that a strict
+        majority of them gives, from at least two functions, maps it. One
+        of our addresses that is named only by this row maps through the
+        reverse: a shipped address that the other rows prove is another
+        global of ours refutes it, unless the two are the same read-only
+        bytes (const data that the shipped link folded).
+
+    An operand whose proven shipped address is different from the shipped
+    operand is a CONTRADICTION: the row is near, not identical. An operand
+    with no proof (nothing else names it, the evidence disagrees with
+    itself, or it is outside our image) is UNPROVEN: the row stays
+    identical, and is counted apart (`identical_unproven`). Rows in a
+    target's `readable` pages (another build's addresses) are not checked
+    and give no evidence. A demoted row gives no evidence, and the pass
+    repeats until nothing changes. Nothing becomes identical here.
+
+    Returns {shipped address: (ours, the first contradiction)} for the
+    rows it made near."""
+    DATAREF_ROWS[:] = [r for r in DATAREF_ROWS if r[0] != label]
+    DATAREF_COUNTS[label] = {"checked": 0, "contradicted": 0,
+                             "unproven": 0, "equivalent": 0}
+    our_img = built_image(tgt)
+    layout = _our_layout(mapfile) if mapfile else None
+    if not our_img or not layout:
+        return {}
+    ope = Pe(os.path.join(REPO, our_img))
+    ours_at = _ours_at(funcs, from_lib, layout, ope)
+    o_secs = [(sva, sva + vs) for sva, vs, _rp in ope.secs.values()]
+    otva, otvs, _r = ope.secs[".text"]
+    s_lo, s_hi = tva, tva + len(text)
+    ro = [(sva, sva + vs) for nm, (sva, vs, _rp) in ope.secs.items()
+          if nm in (".rdata", ".text")]
+
+    def dword(p, va):
+        if p is pe and s_lo <= va < s_hi - 3:
+            return struct.unpack_from("<I", text, va - tva)[0]
+        o = p.va2off(va)
+        return struct.unpack_from("<I", p.d, o)[0] \
+            if o is not None and o + 4 <= len(p.d) else None
+
+    def raw(p, va, n):
+        if p is pe and s_lo <= va and va + n <= s_hi:
+            return bytes(text[va - tva:va - tva + n])
+        o = p.va2off(va)
+        if o is None or o + n > len(p.d):
+            return None
+        return bytes(p.d[o:o + n])
+
+    def operand(which, fa, off, kind):
+        v = dword(which, fa + off)
+        if v is None:
+            return None
+        if kind == 0x14:                    # REL32
+            r = (fa + off + 4 + v) & 0xFFFFFFFF
+        elif kind == 0x06:                  # DIR32
+            r = v
+        elif kind == 0x07:                  # DIR32NB, an RVA
+            r = (v + which.base) & 0xFFFFFFFF
+        else:
+            return None
+        # (an unresolved symbol of a /FORCE link is the image base: unknown)
+        if which is ope and not any(lo <= r < hi for lo, hi in o_secs):
+            return None
+        return r
+
+    syms = _map_symbols(mapfile)
+    saddr = [a for a, _s in syms]
+
+    def sym_of(ov):
+        j = bisect.bisect_right(saddr, ov) - 1
+        return (syms[j][1], syms[j][0]) if j >= 0 else ("?", ov)
+
+    def sym_end(a):
+        j = bisect.bisect_right(saddr, a)
+        return saddr[j] if j < len(saddr) else a + 4
+
+    # our link's /OPT:ICF: one address, several functions
+    names_at = {}
+    for a, s in syms:
+        if otva <= a < otva + otvs:
+            names_at.setdefault(a, set()).add(s)
+    folded = {a for a, ns in names_at.items() if len(ns) > 1}
+
+    def imports_by_slot(p):
+        out, seen, dup = {}, {}, set()
+        for slot, nm in p.imports().items():
+            if not nm or nm.endswith("…") or nm.endswith("!None"):
+                continue
+            if nm in seen:
+                dup.add(nm)
+            seen[nm] = slot
+            out[slot] = nm
+        return {s: nm for s, nm in out.items() if nm not in dup}
+    o_imp, s_imp = imports_by_slot(ope), imports_by_slot(pe)
+
+    def import_of(p, va):
+        """The import that va is (a slot), or that a `jmp [slot]` at va
+        reaches."""
+        imp = o_imp if p is ope else s_imp
+        if va in imp:
+            return imp[va]
+        b = raw(p, va, 6)
+        if b and b[:2] == b"\xff\x25":
+            return imp.get(struct.unpack_from("<I", b, 2)[0])
+        return None
+
+    def jmp_target(va):
+        b = raw(pe, va, 5)
+        if b and b[0] == 0xE9:
+            return (va + 5 + struct.unpack_from("<i", b, 1)[0]) & 0xFFFFFFFF
+        return None
+
+    def relocs(n):
+        end = len(funcs[n][0].rstrip(b"\x90\xcc"))
+        selfs = getattr(funcs[n][1], "selfrefs", {})
+        return [(o, k) for o, k in sorted(rkinds.get(n, {}).items())
+                if o + 4 <= end and o not in selfs and k in (6, 7, 0x14)]
+
+    shape_ok = SHAPE_OK.get(label, set())
+    long_ok = LONG_OK.get(label, set())
+    lit_ok = LITERAL_OK.get(label, {})
+
+    def unambiguous(n, sa):
+        return how(n, sa) is not None
+
+    def how(n, sa):
+        """What placed n at sa without a choice, or None."""
+        return "name" if n in placed else \
+            "operands" if n in shape_ok or n in long_ok else \
+            "literals" if lit_ok.get(n) == sa else \
+            "relocations" if n in verified else \
+            "only hit" if len(all_hits.get(n, ())) == 1 else \
+            "no anchor" if not all_hits.get(n) else None
+
+    rows = {}
+    for sa in sorted(matched):
+        n = PLACED_SYMS.get((label, sa))
+        if n is None or n not in ours_at or n not in funcs or \
+                n in from_lib or rebased(sa):
+            continue
+        rows[sa] = n
+    sites = {}
+    for sa, n in rows.items():
+        oa = ours_at[n]
+        sites[sa] = [(off, kind, operand(ope, oa, off, kind),
+                      operand(pe, sa, off, kind)) for off, kind in relocs(n)]
+
+    def code_len(n):
+        return len(funcs[n][0].rstrip(b"\x90\xcc"))
+
+    ours_fn = {}               # our address -> a function of ours there
+    for m, a in sorted(ours_at.items()):
+        if m in funcs and a not in folded:
+            ours_fn.setdefault(a, m)
+    # (and a library's, by its name in the map: its code, for same_code)
+    by_leaf = {}
+    for m in sorted(funcs):
+        if m in from_lib:
+            by_leaf.setdefault(m.split(":", 1)[-1], m)
+    for a, sym in syms:
+        if a not in folded and a not in ours_fn and sym in by_leaf:
+            ours_fn[a] = by_leaf[sym]
+    _eq = {}
+
+    def target(n, off):
+        """(the symbol our relocation at off names, its addend)."""
+        return RELOC_TARGETS.get(n, {}).get(off) or ("?", 0)
+
+    def own_part(n, off):
+        """The relocation names a part that the compiler makes for the
+        function itself (its exception handler and tables, its unwind
+        funclets, a local label): each copy of the function has its own."""
+        sym = target(n, off)[0] or ""
+        return sym.startswith(("__ehhandler$", "__ehfuncinfo$",
+                               "__unwindfunclet$", "__unwindtable$",
+                               "__tryblocktable$", "__catchsym$",
+                               "__catch$", "$L"))
+
+    def same_code(a, b, n, depth=4):
+        """True when the shipped functions at a and b are copies of one
+        function, n's: the same bytes over n's length but for its
+        relocations, and each operand the same address, or (a call) the
+        same function in turn, or a place in each copy that is at the same
+        offset. The shipped image keeps several copies of some COMDATs
+        (CShell.dll's basic_string::append, one for each of several
+        objects), each calling its own copies of the helpers."""
+        if a == b:
+            return True
+        ta, tb = jmp_target(a), jmp_target(b)
+        a, b = ta if ta is not None else a, tb if tb is not None else b
+        if a == b:
+            return True
+        key = (a, b, n)
+        if key in _eq:
+            return _eq[key]
+        _eq[key] = False        # (a cycle proves nothing)
+        ln = code_len(n)
+        x, y = raw(pe, a, ln), raw(pe, b, ln)
+        if x is None or y is None or depth <= 0:
+            return False
+        rk = {o: k for o, k in rkinds.get(n, {}).items() if o + 4 <= ln}
+        cover = {o + i for o in rk for i in range(4)}
+        if any(x[i] != y[i] for i in range(ln) if i not in cover):
+            return False
+        oa = ours_at.get(n)
+        for o, k in rk.items():
+            va, vb = operand(pe, a, o, k), operand(pe, b, o, k)
+            if va == vb:
+                continue
+            if va is None or vb is None:
+                return False
+            if a <= va < a + ln and va - a == vb - b:
+                continue
+            if own_part(n, o):
+                continue
+            ov = operand(ope, oa, o, k) if oa is not None else None
+            h = ours_fn.get(ov)
+            if h is None or not (s_lo <= va < s_hi and s_lo <= vb < s_hi) \
+                    or not same_code(va, vb, h, depth - 1):
+                return False
+        _eq[key] = True
+        return True
+
+    hits_by_leaf = {}
+    for m, hs in all_hits.items():
+        hits_by_leaf.setdefault(m.split(":", 1)[-1], set()).update(hs)
+
+    def lookalike(h, b):
+        """The shipped function at b has the masked bytes of our function
+        h, and each literal that h names has the same content there: one
+        more copy of h's shape (the shipped image keeps several copies
+        of some template functions, and our source has one symbol for
+        them). Not proof that it is h, and not proof that it is not."""
+        if b not in hits_by_leaf.get(h.split(":", 1)[-1], ()):
+            return False
+        oa = ours_at.get(h)
+        for o, k in rkinds.get(h, {}).items():
+            sym, add = target(h, o)
+            size = _literal_size(sym or "") if k == 6 and add == 0 else None
+            if not size or oa is None:
+                continue
+            ov, sv = operand(ope, oa, o, k), operand(pe, b, o, k)
+            if ov is None or sv is None or raw(ope, ov, size) != raw(pe, sv,
+                                                                    size):
+                return False
+        return True
+
+    seen_ro = {}
+    s_ro = [(sva, sva + vs) for nm, (sva, vs, _rp) in pe.secs.items()
+            if nm == ".rdata"]
+
+    def same_ship_data(ov, a, b):
+        """Our constant at ov (read-only, up to 64 bytes), and the shipped
+        bytes at a and at b: the same (the shipped link, or the compiler,
+        used another copy of one constant)."""
+        if not any(lo <= ov < hi for lo, hi in ro) or \
+                not all(any(lo <= v < hi for lo, hi in s_ro) for v in (a, b)):
+            return False
+        ln = sym_end(ov) - ov
+        if not 0 < ln <= 64:
+            return False
+        x, y, z = raw(ope, ov, ln), raw(pe, a, ln), raw(pe, b, ln)
+        return x is not None and x == y == z
+
+    def same_ours_data(a, b):
+        """Our data at a and at b: the same read-only bytes."""
+        if (a, b) not in seen_ro:
+            ok = False
+            if any(lo <= a < hi for lo, hi in ro) and \
+                    any(lo <= b < hi for lo, hi in ro):
+                la, lb = sym_end(a) - a, sym_end(b) - b
+                ln = min(la, lb, 4096)
+                if la == lb and ln > 0:
+                    x, y = raw(ope, a, ln), raw(ope, b, ln)
+                    ok = x is not None and x == y
+            seen_ro[(a, b)] = ok
+        return seen_ro[(a, b)]
+
+    def build(live):
+        """The map the live rows prove: the code intervals of the rows
+        placed without a choice, and the votes of every operand."""
+        iv = []
+        for sa, n in live.items():
+            if unambiguous(n, sa) and ours_at[n] not in folded:
+                iv.append((ours_at[n], ours_at[n] + code_len(n), sa, n))
+        iv.sort()
+        fwd, rev = {}, {}
+        for sa, n in live.items():
+            for off, _kind, ov, sv in sites[sa]:
+                if ov is None or sv is None:
+                    continue
+                k = vkey(n, off, ov)
+                fwd.setdefault(k, {}).setdefault(sv, set()).add(sa)
+                rev.setdefault(sv, {}).setdefault(k, set()).add(sa)
+        return iv, [a for a, _e, _s, _n in iv], fwd, rev
+
+    def vkey(n, off, ov):
+        """What the votes are kept by: a place in our code, or (for data)
+        the symbol our relocation names and the address. (Two symbols can
+        reach one address: a constant, and a table's end.)"""
+        if otva <= ov < otva + otvs:
+            return ov
+        return (target(n, off)[0], ov)
+
+    def code_at(iv, ivs, ov):
+        j = bisect.bisect_right(ivs, ov) - 1
+        if j >= 0 and iv[j][0] <= ov < iv[j][1]:
+            return iv[j][2] + (ov - iv[j][0]), iv[j][3]
+        return None
+
+    def vote(fwd, ov, me):
+        """The shipped address that a strict majority of the rows naming
+        ov give, from two rows or more, and whether rows other than `me`
+        name ov at all; None when the votes disagree."""
+        vs = fwd.get(ov, {})
+        tot = sum(len(s) for s in vs.values())
+        others = any(s - {me} for s in vs.values())
+        for sv, rs in vs.items():
+            if 2 * len(rs) > tot and len(rs) >= 2:
+                return sv, others
+        return None, others
+
+    def judge(sa, n, off, kind, ov, sv, iv, ivs, fwd, rev):
+        """('ok' | 'equivalent' | 'unproven' | 'contradiction', the shipped
+        address ov maps to or None, the evidence)."""
+        if ov is None:
+            # (an absolute symbol, `__except_list` the offset of fs:[0]:
+            # the same value in both images)
+            if kind == 6 and sv is not None and \
+                    dword(ope, ours_at[n] + off) == sv and \
+                    not any(lo <= sv < hi for lo, hi in o_secs):
+                return "ok", sv, "absolute"
+            return "unproven", None, "outside our image"
+        if sv is None:
+            return "unproven", None, "shipped operand unreadable"
+        oi = import_of(ope, ov)
+        if oi is not None:
+            si = import_of(pe, sv)
+            if si is not None and si.lower() == oi.lower():
+                return "ok", sv, "import"
+            if si is not None and "#" not in si + oi:
+                return "contradiction", None, "import " + oi + " / " + si
+            # (a slot the shipped import table does not name, as a copy
+            # protection's: the other rows' votes can prove it. They do
+            # not refute it: a protection sends calls of several imports
+            # through one slot of its own, AvP2's AVP2.exe 0x4492f8)
+            key = vkey(n, off, ov)
+            want, others = vote(fwd, key, sa)
+            if want is not None and others and want == sv:
+                return "ok", want, "import %s, votes" % oi
+            return "unproven", want, "import " + oi
+        oa = ours_at[n]
+        if oa <= ov < oa + code_len(n):
+            want = sa + (ov - oa)
+            return ("ok" if want == sv else "contradiction"), want, "itself"
+        sym, addend = target(n, off)
+        sym = sym or "?"
+        if otva <= ov < otva + otvs:
+            if ov in folded:
+                return ("ok" if sv in ship_of.get(ov, ()) else "unproven"), \
+                    None, "our /OPT:ICF fold"
+            c = code_at(iv, ivs, ov)
+            if c is not None:
+                want, g = c
+                if want == sv or jmp_target(sv) == want:
+                    return "ok", want, "placed " + g
+                if ov == ours_at[g] and same_code(want, sv, g):
+                    return "equivalent", want, "a copy of " + g
+                if ov == ours_at[g] and lookalike(g, sv):
+                    return "unproven", want, "a look-alike of " + g
+                return "contradiction", want, "placed (%s) %s%s" % (
+                    how(g, want), g, owner(sv))
+        else:
+            size = _literal_size(sym) if kind == 6 and addend == 0 \
+                else None
+            if size:
+                a, b = raw(ope, ov, size), raw(pe, sv, size)
+                if a is None or b is None:
+                    return "unproven", None, "literal unreadable"
+                return ("ok" if a == b else "contradiction"), None, \
+                    "literal %r / %r" % (a[:24], b[:24])
+            if sym.startswith("??_7") and kind == 6 and addend == 0:
+                agree = 0
+                for k in range(min((sym_end(ov) - ov) // 4, 1024)):
+                    od, sd = dword(ope, ov + 4 * k), dword(pe, sv + 4 * k)
+                    if od is None or sd is None or \
+                            not otva <= od < otva + otvs:
+                        break
+                    c = code_at(iv, ivs, od)
+                    if c is None:
+                        continue
+                    want, g = c
+                    if want == sd or jmp_target(sd) == want or (
+                            od == ours_at[g] and same_code(want, sd, g)):
+                        agree += 1
+                        continue
+                    return "contradiction", None, \
+                        "vtable slot %d: %s is 0x%x, the shipped slot 0x%x" % (
+                            k, g, want, sd)
+                if agree:
+                    return "ok", None, "vtable, %d slots" % agree
+        key = vkey(n, off, ov)
+        want, others = vote(fwd, key, sa)
+        if want is not None:
+            if want == sv:
+                return ("ok" if others else "unproven"), want, "votes"
+            h = ours_fn.get(ov)
+            if h is not None and s_lo <= want < s_hi and \
+                    same_code(want, sv, h):
+                return "equivalent", want, "votes, a copy of " + h
+            if h is not None and lookalike(h, sv):
+                return "unproven", want, "votes, a look-alike of " + h
+            if h is None and same_ship_data(ov, want, sv):
+                return "equivalent", want, "votes, the same constant"
+            return "contradiction", want, "votes %d of %d%s" % (
+                len(fwd[key][want]), sum(len(x) for x in fwd[key].values()),
+                owner(sv))
+        if others:
+            return "unproven", None, "the rows that name it disagree"
+        # named by this row only: the reverse (another of ours is there)
+        if not otva <= ov < otva + otvs:
+            for y, rs in rev.get(sv, {}).items():
+                if y == key or not rs - {sa}:
+                    continue
+                w, _o = vote(fwd, y, sa)
+                ya = y[1] if isinstance(y, tuple) else y
+                if w == sv and ya != ov and not same_ours_data(ov, ya):
+                    return "contradiction", None, \
+                        "the shipped operand is our 0x%x (%s)" % (
+                            ya, sym_of(ya)[0])
+        else:
+            g = rows_live.get(sv)
+            if g is not None:
+                h = ours_fn.get(ov)
+                if unambiguous(g, sv) and ours_at[g] != ov and \
+                        ov not in ship_of and not same_ours_code(ov, g) \
+                        and not (h is not None and lookalike(h, sv)):
+                    return "contradiction", None, \
+                        "the shipped operand is placed (%s) %s" % (
+                            how(g, sv), g)
+        return "unproven", None, "named by this row only"
+
+    def same_ours_code(ov, g):
+        """Our code at ov has g's bytes, and names what g names in our
+        image (the shipped link folded them: /OPT:ICF)."""
+        ln = code_len(g)
+        x, y = raw(ope, ov, ln), raw(ope, ours_at[g], ln)
+        if x is None or y is None:
+            return False
+        rk = {o: k for o, k in rkinds.get(g, {}).items() if o + 4 <= ln}
+        cover = {o + i for o in rk for i in range(4)}
+        if any(x[i] != y[i] for i in range(ln) if i not in cover):
+            return False
+        return all(operand(ope, ov, o, k) == operand(ope, ours_at[g], o, k)
+                   for o, k in rk.items())
+
+    def owner(sv):
+        """What the shipped address sv is of ours, by the evidence: '' or
+        '; the shipped operand is ...'."""
+        g = rows_live.get(sv)
+        if g is not None:
+            return "; the shipped operand is placed %s" % g
+        for y in rev.get(sv, {}):
+            w, _o = vote(fwd, y, None)
+            if w == sv:
+                ya = y[1] if isinstance(y, tuple) else y
+                return "; the shipped operand is our 0x%x (%s)" % (
+                    ya, sym_of(ya)[0])
+        return ""
+
+    def kind_of(n, off):
+        return rkinds.get(n, {}).get(off)
+
+    demoted = {}
+    rows_live = dict(rows)
+    verdicts = {}
+    for _round in range(6):
+        iv, ivs, fwd, rev = build(rows_live)
+        ship_of = {}           # our address -> the shipped rows of it
+        for a, m in rows_live.items():
+            ship_of.setdefault(ours_at[m], set()).add(a)
+        new = {}
+        verdicts = {}
+        # A placement that two rows or more refute: they call our function
+        # (its start) at one other shipped address, and no other row calls
+        # it where it is placed. The masked bytes matched there, and the
+        # callers say that the function there is another one (Tron 2.0
+        # CShell.dll: CWeaponChooser's constructor matched only at the
+        # address that CHUDAnnouncementMsgQueue's constructor calls).
+        for sa, n in rows_live.items():
+            if how(n, sa) not in ("only hit", "no anchor"):
+                continue
+            vs = {}
+            for sv, rs in fwd.get(ours_at[n], {}).items():
+                rs = rs - {sa}
+                if not rs:
+                    continue
+                if sv == sa or jmp_target(sv) == sa:
+                    vs = None
+                    break
+                vs[sv] = rs
+            if not vs or len(vs) != 1:
+                continue
+            (b, rs), = vs.items()
+            if len(rs) >= 2 and not same_code(sa, b, n) and \
+                    not lookalike(n, b):
+                new[sa] = (n, ("contradiction", 0, ours_at[n], sa, b,
+                               "%d rows call it at 0x%x" % (len(rs), b)))
+        if new:
+            iv = [x for x in iv if x[2] not in new]
+            ivs = [x[0] for x in iv]
+        for sa, n in rows_live.items():
+            if sa in new:
+                continue
+            out = []
+            for off, kind, ov, sv in sites[sa]:
+                st, want, ev = judge(sa, n, off, kind, ov, sv, iv, ivs,
+                                     fwd, rev)
+                out.append((st, off, ov, want, sv, ev))
+            verdicts[sa] = out
+            bad = [v for v in out if v[0] == "contradiction"]
+            if bad:
+                new[sa] = (n, bad[0])
+        if not new:
+            break
+        for sa, v in new.items():
+            demoted[sa] = v
+            del rows_live[sa]
+    cnt = DATAREF_COUNTS[label]
+    cnt["checked"] = len(rows)
+    why = {int(w, 16) for w in os.environ.get("PROGRESS_LONG_WHY", "")
+           .split(",") if w}
+    for sa in sorted(rows):
+        n = rows[sa]
+        out = verdicts.get(sa)
+        if sa in demoted:
+            # (its verdicts from the round that demoted it)
+            out = [demoted[sa][1]]
+        for st, off, ov, want, sv, ev in out or ():
+            if st == "ok":
+                continue
+            ys, add = target(n, off)
+            DATAREF_ROWS.append((label, sa, n, off, st,
+                                 "%s+0x%x" % (ys, add) if kind_of(n, off) == 6
+                                 else ys, ov, want, sv, ev))
+        if sa in why:
+            for st, off, ov, want, sv, ev in verdicts.get(sa) or out or ():
+                print("    datarefs at", hex(sa), n, "+%#x" % off, st,
+                      "ours", "-" if ov is None else hex(ov),
+                      target(n, off)[0],
+                      "maps to", "-" if want is None else hex(want),
+                      "shipped", "-" if sv is None else hex(sv), ev,
+                      file=sys.stderr)
+        if sa in demoted:
+            continue
+        sts = {v[0] for v in out or ()}
+        if "unproven" in sts:
+            cnt["unproven"] += 1
+        if "equivalent" in sts:
+            cnt["equivalent"] += 1
+    for sa, (n, (st, off, ov, want, sv, ev)) in sorted(demoted.items()):
+        del matched[sa]
+        PLACED_SYMS.pop((label, sa), None)
+        paired[sa] = n
+        NEAR_PAIRS.append((label, sa, sizes.get(sa, 0), n, sa + code_len(n)))
+        if sa in why or os.environ.get("PROGRESS_SHAPE_LOG"):
+            print("    contradicted", n, hex(sa), "+%#x" % off, "ours",
+                  hex(ov), target(n, off)[0], "maps to",
+                  "-" if want is None else hex(want), "shipped", hex(sv), ev,
+                  file=sys.stderr)
+    cnt["contradicted"] = len(demoted)
+    print(f"  {label}: operands of identical rows: {len(rows)} checked, "
+          f"{len(demoted)} contradicted (near), {cnt['unproven']} with an "
+          f"unproven operand, {cnt['equivalent']} naming an equivalent copy",
+          file=sys.stderr)
+    return demoted
+
+
 def _rows_for_image(tgt, objs, mapfile, linked_path):
     """A PE image under reconstruction (exe or dll, no symbols).
 
@@ -4047,6 +4671,13 @@ def _rows_for_image(tgt, objs, mapfile, linked_path):
         starts = _merge_split_tails(tgt, label, text, tva, starts, sizes,
                                     matched, paired, small, funcs, icl)
 
+    # Each operand of an identical row must name what the shipped operand
+    # names (a function that reads the wrong global is byte-identical)
+    if mapfile:
+        _verify_datarefs(tgt, label, matched, paired, funcs, from_lib,
+                         rkinds, all_hits, placed, set(verified.values()),
+                         mapfile, pe, text, tva, sizes, rebased)
+
     rows = []
     seen_unreadable = set()
     for n, size in sorted(unreadable.items()):
@@ -4759,6 +5390,24 @@ def main():
         t["bytes_total"] += size
         if status == "identical":
             t["bytes_identical"] += size
+
+    # what _verify_datarefs found: the identical rows that rest on an
+    # operand nothing proves, and the rows an operand made near
+    for label, c in DATAREF_COUNTS.items():
+        if label in targets:
+            targets[label]["identical_unproven"] = c["unproven"]
+            targets[label]["near_contradicted"] = c["contradicted"]
+    with open(os.path.join(OUT, "datarefs.csv"), "w", newline="") as f:
+        w = csv.writer(f, lineterminator="\n")
+        w.writerow(["target", "shipped", "function", "offset", "verdict",
+                    "ours", "our operand", "maps to", "shipped operand",
+                    "evidence"])
+        for r in sorted(DATAREF_ROWS, key=lambda r: (
+                r[0], r[4] != "contradiction", r[1], r[3])):
+            w.writerow([r[0], "0x%08x" % r[1], r[2], "0x%x" % r[3], r[4],
+                        r[5], "" if r[6] is None else "0x%08x" % r[6],
+                        "" if r[7] is None else "0x%08x" % r[7],
+                        "" if r[8] is None else "0x%08x" % r[8], r[9]])
 
     kinds = {t["label"]: t["kind"] for t in TARGETS}
     kinds.update({label: "lib" for label, _p in LIBS})
