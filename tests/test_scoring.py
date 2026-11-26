@@ -19,7 +19,10 @@ start inside a near function's switch tables merged into it
 (_merge_split_tails); end to end through _rows_for_image: a function
 our link leaves out pairs only where nothing of our link does, long
 look-alikes chosen by what they call and by their vtables' slots, or
-identical nowhere, and a second run that starts from nothing; and
+identical nowhere, and a second run that starts from nothing; an
+identical row that reads the wrong global, calls the wrong function or
+passes another string near, a pooled literal compared by content, and a
+global only one row names unproven (_verify_datarefs); and
 enumfuncs' rule 4h (a start reached only by a tail jump or a loaded
 address). Not covered here, by their nature: vtabcheck.py
 and the region rules need a linked image and a map (tested against the
@@ -775,6 +778,156 @@ class Rows(unittest.TestCase):
         self.assertEqual(ident.get(shipped.at["_z"]), "_z")
         self.assertNotEqual(status.get(shipped.at["_f1"]), "identical")
         self.assertNotEqual(status.get(shipped.at["_f2"]), "identical")
+
+
+class DataRefs(unittest.TestCase):
+    """_verify_datarefs: an identical row whose operand names another
+    thing than the shipped operand is near. The masked bytes match."""
+
+    score = Rows.score
+    caller = staticmethod(Rows.caller)
+
+    G1, G2, G3 = 0x402000, 0x402010, 0x402020
+
+    @staticmethod
+    def reader(seed):
+        """`mov eax, [global]` and then code unique to the seed."""
+        return b"\xa1\0\0\0\0" + body(seed, 40)
+
+    def images(self, close_ours, close_ship=None, ours_extra=()):
+        """A and B read G1, C and D read G2 in both images. Close reads
+        close_ship (G2) in the shipped image and close_ours in ours."""
+        close_ship = close_ship or self.G2
+        fs = [("_a", 21, self.G1), ("_b", 22, self.G1), ("_c", 23, self.G2),
+              ("_d", 24, self.G2), ("_close", 25, None)]
+        root, calls = self.caller([n for n, _s, _g in fs])
+        lay = [(0x40 * i, n, self.reader(s), []) for i, (n, s, _g)
+               in enumerate(fs)]
+        shipped = Image(lay + [(0x180, "_root", root, calls)])
+        ours = Image(lay)
+        for img, close in ((shipped, close_ship), (ours, close_ours)):
+            text = bytearray(img.text)
+            for i, (_n, _s, g) in enumerate(fs):
+                struct.pack_into("<I", text, 0x40 * i + 1, g or close)
+            img.text = bytes(text)
+            # (each global its own bytes: not one constant)
+            img.rdata = bytes(range(1, 0x41))
+        ours.data_syms = {"_g1": self.G1, "_g2": self.G2, "_g3": self.G3}
+        name = {self.G1: "_g1", self.G2: "_g2", self.G3: "_g3"}
+        objs = {"x.obj": coff_funcs(
+            [(n, self.reader(s), [(1, name[g or close_ours], DIR32)])
+             for n, s, g in fs])}
+        return shipped, ours, objs
+
+    def close_status(self, close_ours, close_ship=None):
+        shipped, ours, objs = self.images(close_ours, close_ship)
+        status, _near, ident, _rows = self.score(shipped, ours, objs)
+        return shipped, status, ident
+
+    def test_the_wrong_global_is_near(self):
+        # CTronWeaponChooser::Close: retail reads g_pWeaponItem (G2),
+        # ours g_pHUDWeapon (G1), which A and B prove is 0x402000
+        shipped, status, ident = self.close_status(self.G1)
+        self.assertEqual(status.get(shipped.at["_close"]), "near")
+        self.assertEqual(ident.get(shipped.at["_a"]), "_a")
+        self.assertEqual(ident.get(shipped.at["_c"]), "_c")
+        why = [r for r in progress.DATAREF_ROWS if r[0] == "T.exe" and
+               r[4] == "contradiction"]
+        self.assertEqual([(r[2], r[6], r[7], r[8]) for r in why],
+                         [("x.obj:_close", self.G1, self.G1, self.G2)])
+        self.assertEqual(progress.DATAREF_COUNTS["T.exe"]["contradicted"], 1)
+
+    def test_the_right_global_is_identical(self):
+        shipped, status, ident = self.close_status(self.G2)
+        self.assertEqual(ident.get(shipped.at["_close"]), "_close")
+        self.assertEqual(progress.DATAREF_COUNTS["T.exe"]["contradicted"], 0)
+        self.assertEqual(progress.DATAREF_COUNTS["T.exe"]["unproven"], 0)
+
+    def test_a_global_only_one_row_names_is_unproven(self):
+        # ours G3, shipped 0x402030: nothing else names either
+        shipped, status, ident = self.close_status(self.G3, 0x402030)
+        self.assertEqual(ident.get(shipped.at["_close"]), "_close")
+        self.assertEqual(progress.DATAREF_COUNTS["T.exe"]["unproven"], 1)
+
+    def test_a_global_whose_shipped_address_is_another_of_ours_is_near(self):
+        # ours G3, which only Close names; the shipped operand is G2, which
+        # C and D prove is our G2
+        shipped, status, _ident = self.close_status(self.G3)
+        self.assertEqual(status.get(shipped.at["_close"]), "near")
+
+    def test_the_wrong_callee_is_near(self):
+        # ours calls X, placed at its one hit; the shipped code calls Y
+        x, y = body(5), body(6)
+        f = b"\xe8\0\0\0\0" + body(7, 48)
+        root, calls = self.caller(["_f", "_x", "_y"])
+        shipped = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                         (0x080, "_f", f, [(1, "_y")]),
+                         (0x100, "_root", root, calls)])
+        ours = Image([(0x000, "_x", x, []), (0x040, "_y", y, []),
+                      (0x080, "_f", f, [(1, "_x")])])
+        objs = {"x.obj": coff_funcs([("_x", x, []), ("_y", y, []),
+                                     ("_f", f, [(1, "_x", REL32)])])}
+        status, _near, ident, _rows = self.score(shipped, ours, objs)
+        self.assertEqual(ident.get(shipped.at["_x"]), "_x")
+        self.assertEqual(status.get(shipped.at["_f"]), "near")
+
+    def test_a_call_to_another_copy_is_not_a_contradiction(self):
+        # the shipped image keeps two copies of X; C1 and C2 call the
+        # first, C3 the second. Ours has one X: all three stay identical
+        x = body(5)
+        cs = [("_c1", 41), ("_c2", 42), ("_c3", 43)]
+        code = {n: b"\xe8\0\0\0\0" + body(sd, 40) for n, sd in cs}
+        root, calls = self.caller([n for n, _s in cs])
+        shipped = Image([(0x000, "_x1", x, []), (0x040, "_x2", x, []),
+                         (0x080, "_c1", code["_c1"], [(1, "_x1")]),
+                         (0x0c0, "_c2", code["_c2"], [(1, "_x1")]),
+                         (0x100, "_c3", code["_c3"], [(1, "_x2")]),
+                         (0x140, "_root", root, calls)])
+        ours = Image([(0x000, "_x", x, [])] +
+                     [(0x80 + 0x40 * i, n, code[n], [(1, "_x")])
+                      for i, (n, _s) in enumerate(cs)])
+        objs = {"x.obj": coff_funcs([("_x", x, [])] +
+                                    [(n, code[n], [(1, "_x", REL32)])
+                                     for n, _s in cs])}
+        status, _near, ident, _rows = self.score(shipped, ours, objs)
+        for n, _s in cs:
+            self.assertEqual(ident.get(shipped.at[n]), n)
+
+    def literal_images(self, ship_strings):
+        """F and G each pass a string; ours pools one literal. The shipped
+        image has a copy for each (ship_strings)."""
+        lit = "??_C@_05ABCD@hello?$AA@"
+        fs = [("_f", 31), ("_g", 32)]
+        lay = [(0x40 * i, n, b"\x68\0\0\0\0" + body(s, 40), [])
+               for i, (n, s) in enumerate(fs)]
+        root, calls = self.caller([n for n, _s in fs])
+        shipped = Image(lay + [(0x100, "_root", root, calls)])
+        ours = Image(lay)
+        for img, addrs in ((shipped, (0x402000, 0x402010)),
+                           (ours, (0x402000, 0x402000))):
+            text = bytearray(img.text)
+            for i, a in enumerate(addrs):
+                struct.pack_into("<I", text, 0x40 * i + 1, a)
+            img.text = bytes(text)
+        shipped.rdata = ship_strings[0].ljust(16, b"\0") + \
+            ship_strings[1].ljust(16, b"\0")
+        ours.rdata = b"hello\0".ljust(32, b"\0")
+        ours.data_syms = {lit: 0x402000, "_after": 0x402006}
+        objs = {"x.obj": coff_funcs(
+            [(n, b"\x68\0\0\0\0" + body(s, 40), [(1, lit, DIR32)])
+             for n, s in fs])}
+        status, _near, ident, _rows = self.score(shipped, ours, objs)
+        return shipped, status, ident
+
+    def test_a_pooled_literal_is_compared_by_content(self):
+        shipped, status, ident = self.literal_images((b"hello", b"hello"))
+        self.assertEqual(ident.get(shipped.at["_f"]), "_f")
+        self.assertEqual(ident.get(shipped.at["_g"]), "_g")
+
+    def test_a_different_literal_is_near(self):
+        shipped, status, ident = self.literal_images((b"hello", b"world"))
+        self.assertEqual(ident.get(shipped.at["_f"]), "_f")
+        self.assertNotEqual(status.get(shipped.at["_g"]), "identical")
 
 
 class TailJumpStarts(unittest.TestCase):
