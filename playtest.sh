@@ -172,13 +172,17 @@ NAME="${PLAYTEST_NAME:-$(basename "$GAME")}"
 
 RUN="$REPO/out/play/$NAME"
 rm -rf "$RUN"; mkdir -p "$RUN"
-# binaries copied, data linked (relative links)
+# binaries and small files copied, archives and directories linked (relative links)
 REL="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$GAME" "$RUN")"
 for f in "$GAME"/*; do
     b=$(basename "$f")
     # (MANIFEST.txt is linked: windows-run.bat reads it)
     case "$b" in autoexec.cfg|Save|Profiles|nolf2cmds.txt|linux-run.sh|linux-run-launcher.sh|run-cmds.txt|launchcmds.txt) continue ;; esac
-    if [ -f "$f" ] && [ "$(head -c 2 "$f" | tr -d '\0')" = MZ ]; then cp "$f" "$RUN/$b"
+    # Binaries and small files are copied: a game can rewrite a small data
+    # file in place (AvP2's Primal Hunt rewrites FontData.fnt), and through
+    # a link it would change the game directory. The archives and the
+    # directories (large, read only) are linked.
+    if [ -f "$f" ] && { [ "$(head -c 2 "$f" | tr -d '\0')" = MZ ] || [ "$(stat -c %s "$f")" -lt 1048576 ]; }; then cp "$f" "$RUN/$b"
     else ln -s "$REL/$b" "$RUN/$b"; fi
 done
 echo "game directory: $GAME" > "$RUN/binaries.txt"
